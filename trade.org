@@ -1,0 +1,1084 @@
+:PROPERTIES:
+:ID:       2cdd1350-f399-4f7e-a7f6-3bdb6aead01f
+:header-args:python: :tangle no :mkdirp yes
+:END:
+#+title: ctrade
+#+startup: hideblocks
+#+startup: overview
+
+I'm planning a [[file:~/git/notes/agents/norvig.md][Norvig style]] development, but this is the first serious project I'm trying it out on, so I'm still figuring out exactly how.
+
+I'd also need to brush up [[id:2acf272b-757a-447b-b43f-396f00b98744][econ/finance]] domain knowledge, probably from [[id:b4e00eaf-1176-4264-95f4-e28f58f7c581][PC2M]]/[[id:f6c21fff-8d78-4797-acaa-eb23a8f3f741][PC2AM]].
+
+* Agent instructions for coding tasks
+
+Tests are written in the same file, alongside the code, so that they both serve as tests and runnable examples. They are often collected from interaction exploration.
+
+Every definition is validated by an example immediately after it, in the same org file. Examples are run by hand in the org session and are deliberately *not* tangled: only definitions reach the =.py= modules, so =python <module>.py= imports them and does nothing else. Examples stay offline: nothing in them reaches the network. The format is specified in full under [[*book.py][book.py]].
+
+Because of the way we work (making overall plans at the start, working out the details later), the first solution will never be the best one.
+But that's alright, because refactoring is inherently part of programming.
+** the tangle contract
+
+This file is the source. The =.py= modules are generated from it and are tracked only so they can be read next to the prose; never edit one by hand, because the next tangle overwrites it.
+
+#+begin_example
+:PROPERTIES:
+:header-args:python: :tangle no :mkdirp yes
+:END:
+
+# one module per named file, placed under its own heading
+#+begin_src python :tangle book.py
+#+end_src
+
+# a snippet that exists to be read, not run: no argument, no file
+#+begin_src python
+#+end_src
+
+C-c C-v t          # org-babel-tangle, from this buffer
+#+end_example
+
+Two properties make that work, and the file-level default is the important one:
+
+- =:header-args:python: :tangle no :mkdirp yes= lives in this file's property drawer. =:tangle no= means a snippet tangles *only* when it names a file, so a teaching fragment that happens to be valid Python cannot silently become a module. =:mkdirp yes= creates the directory if a path needs one.
+- =:tangle book.py= on the block is what actually produces output.
+
+Naming: block names are an outline of the code's structure and progression, not a tangle mechanism. No names for now; a tradition can come later.
+
+One trap, verified on Emacs 30.2 rather than assumed:
+
+- The subtree form =:tangle book.py :comments no= is *not* what it looks like: org reads everything after the filename as part of the filename and writes a file literally named =book.py :comments no=. Keep the block header to a plain path and put the rest in a property.
+
+This is a human-in-the-loop project, the building process is also a learning process.
+- proceed in small, verifiable steps, understand each new functionality before moving on.
+- aim for concise code and clear logic, don't write overly defensive code, let edge cases fail loudly.
+- note new packages/functionalities, noteworthy programming patterns, etc, so I can continuously improve my skills.
+- check file updates before each step, because the human in the loop will also be constantly updating them.
+- build up gradually, don't add too much complexity at once.
+- each agent action should focus on one and only one task
+
+** DONE code the MVP
+
+I want to write the first MVP (minimum viable program) for this project, following the wishful plan. Each step of the plan is now its own module, and =trade.py= is only the procession through them. This file is the orchestration and understanding layer over that code.
+
+1. discuss before implementation. each project should be a learning process, and the learning is as important as the final product. high-light intermediate and advanced python skills along the way. (can be code comments)
+2. each step can implement merely the simplest logic possible, the important thing is to have a end-to-end coherent system.
+3. follow a Norvig coding style. no over-complication, no unit tests, no defensive coding (let edge cases and logic errors fail loudly), just functional, clearly organized code following best Norvig practices.
+4. clarity over efficiency.
+5. the program should start with a cash allowance and an existing portfolio (possibly empty), and output the next batch of orders to execute. this is not an automatic trading system, the actual execution is out of scope and will be done manually.
+6. I'll later inspect the logic and document it in the org file.
+
+* background
+
+this is a Bayesian guided, Agentic AI aided trading system for China A shares.
+
+I have an existing trading account with about 47K equity, I want to keep the capital as is while I implement the project, and do some vibe trading along the way.
+After setting up the project, I intend to increase the capital to about 100K, run with it for a while (maybe 6 months, to the beginning of 2027), accumulate some experience, and then maybe increase capital to about 200K, for another 1-2 years.
+
+Given the capital constraint, I'm not aiming for high-frequency trading.
+2-6 completed round trips per month, no more than 1/2 new trades one typical week.
+
+trading should be a probabilistic modeling/decision making under uncertainty problem.
+the modeling part should be clearly separated from the decison one.
+trading strategies should meet certain diversity, capital, risk, etc constraints.
+
+*no gambling*. Stop immediately when it has become just gambling.
+managing risk should be a primary concern from the very start.
+
+common failing points: data quality, execution assumptions, risk controls.
+
+* packages
+
+- DuckDB?
+
+- akshare https://akshare.akfamily.xyz/data/stock/stock.html -- installed, but its eastmoney path is blocked here and its Tencent wrapper is a per-year loop; =source.py= talks to the endpoint directly instead.
+- foundamentals, macros, etc
+
+Nothing is imported yet beyond the standard library. Money is a plain =float= (see =book.py= for why that is sufficient at this volume), so the only import so far is =math=, for the =isclose= that ratio checks need.
+
+* wishful plan
+
+this system is used to help making buy/sell decisions, but the actual executions are done manually, outside the system. The whole workflow is one function:
+
+#+name: wish-trade
+#+begin_src python
+def trade(as_of):
+    "Handles one trading session."
+
+    market      = gather()                      # gather current market info
+    portfolio   = retrieve(market, as_of)       # replay the fills ledger
+    metrics     = evaluate(portfolio)           # evaluate performance
+    beliefs     = infer(market)                 # update market beliefs
+    orders      = rebalance(portfolio, beliefs, market, as_of)  # decisions
+
+    return portfolio, metrics, orders           # render() is the caller's step
+#+end_src
+
+=trade= takes an =as_of= argument so we can easily use the same logic in backtesting. It returns the portfolio it reasoned about as well as the orders, so a caller can reconcile it without gathering twice.
+
+=render= is deliberately not inside =trade=: =trade= stays a pure state-in/orders-out function, and =main= does the printing.
+
+** vocabulary, built from use
+
+The vocabulary has a hierarchical structure, but it is not necessary to have it all ready at start: we add words (and improve the implementation) as the project progresses. It is also not my intention to build a full-fledged investment banking system; my system can be simpler than professional traders, and fine trading control can be deferred. The important thing is to have the complete workflow up and running.
+
+The order is deliberate: before ironing out a vocabulary, first think about the operations that will use it (test and usage driven implementation). So each step below says both what the code has now, and what it still wants.
+
+** implemented so far
+
+The code is being rebuilt as literate source, so this section is a migration in progress: the left column is what exists, the right is where it is going. The old modules stay in git until their replacement is verified against the same numbers.
+
+| old module(s)            | new module   | role        | key vocabulary                                  |
+|--------------------------+--------------+-------------+-------------------------------------------------|
+| =portfolio.py=, =ledger.py= | =book.py= DONE  | state       | =Side=, =Lot=, =Position=, =Account=, =replay=      |
+| =gather.py=              | =market.py=  | 1 gather    | =Bar=, =Instrument=, =Market=, =gather=, =mark=      |
+| =infer.py=, =rebalance.py=  | =decide.py=  | 2 decide    | =Rules=, =signal=, =orders=                         |
+| =evaluate.py=, =render.py=  | =report.py=  | 3 report    | =metrics=, =issues=, =ticket=                       |
+| =trade.py=               | =trade.py=   | session     | =session=                                       |
+| =source.py=              | =source.py=  | fetch       | =fetch=, =refresh=                                |
+
+Three changes are doing most of the simplification, and each one removes a name rather than adding one:
+
+- =Portfolio= was account state, risk policy, and derived arithmetic in one class. =Account= keeps only =cash= and =positions=; the policy moves to a =Rules= value that is passed explicitly to the two functions that care, so the decision layer no longer receives the account as a vehicle for the caps.
+- =Belief= and =Metrics= were dataclasses whose only job was to mark a boundary. The boundary is worth keeping; the class is not. A =Belief= becomes an entry in =dict[str, Decimal]= and =Metrics= becomes a named tuple.
+- =Retrieve= and =evaluate= were steps without decisions -- 90 and 67 lines of glue around =replay= and three divisions. Replaying the ledger is =book='s job and producing the risk picture is =report='s.
+
+The pipeline is unchanged, and so is its one-way arrow:
+
+#+begin_example
+gather -> replay -> signal -> orders -> ticket
+#+end_example
+
+=decide= sees =signal= results and =Rules=, never the raw market; nothing in the session path imports =source.py=, so no session can reach the network even by accident.
+
+database
+
+since we already have a real trading account, and trading is ongoing as we build the project, we can build up the database along with the vocabulary.
+
+* market.py
+
+TODO: rewrite from =gather.py=. Reads the snapshot and never touches the network.
+
+** gather: market information
+
+The market datatypes: =Bar=, =Instrument=, =Market=.
+
+#+begin_src python
+@dataclass(frozen=True)
+class Bar:
+    date: date
+    open: Price
+    high: Price
+    low: Price
+    close: Price
+    volume: int             # 手, lots of 100 shares
+
+@dataclass(frozen=True)
+class Instrument:
+    symbol: str
+    name: str
+    bars: Bars              # unadjusted OHLCV, oldest first
+    adjusted: Bars = ()     # qfq, same days when the source has them
+#+end_src
+
+- =gather(as_of=None, window=WINDOW)= returns the relevant =MARKET= information, can be expanded as system grows.
+- =Market= is currently a =dict[str, Instrument]=, instruments keyed by symbol.
+- =closes= and =adjusted_closes= are *properties*, derived from the bars, so there is one payload and two views rather than two things to keep in sync.
+- =Money= is imported from =book= rather than redefined, so there is one money type in the project. =history(...)= will build example bars from literal floats once this section is rewritten.
+- =mark(market, symbol)= is the single definition of "the price right now": =market[symbol].closes[-1]=. Both =retrieve= and =rebalance= go through it, so a session cannot value and trade at different marks.
+
+** real history data
+
+The fixture closes are gone. =gather= reads a snapshot from =bars/= and never touches the network; =source.py= is the only module that fetches, and it is run deliberately.
+
+*** why fetching is a separate step
+
+akshare's headline =stock_zh_a_hist= reads eastmoney, and eastmoney **closes the connection on every attempt from this machine** -- =RemoteDisconnected=, with or without a browser User-Agent and Referer. It is not a rate limit to pace around; that route is simply shut. Batch-fetching harder would only produce more of the same.
+
+The fix is not a cleverer client but a different shape: fetch once, store, and read the store. A session then costs zero requests, so the rate limit stops being a constraint on how the system works. It also buys three things that matter more than the convenience: the tests are deterministic and offline, a pinned =as_of= cannot see the future, and a failed fetch is a visible missing file rather than a silently short price series.
+
+*** the source, and why not akshare
+
+Two Tencent endpoints, both verified working from this machine on 2026-09-29, both reached with the standard library (=urllib= + =json=, no pandas):
+
+| endpoint                     | shape                                                       |
+|------------------------------+-------------------------------------------------------------|
+| =web.ifzq.gtimg.cn= fqkline  | one request per symbol -> up to 640 daily OHLCV bars          |
+| =qt.gtimg.cn/q==             | one request -> many symbols' Chinese names and latest quotes  |
+
+akshare is not used, for two measured reasons rather than taste: its eastmoney path is dead here, and its Tencent wrapper loops one request per *year* while importing pandas and tqdm to hand back a DataFrame. The endpoint underneath returns 640 daily bars in a single request. The whole 11-name, two-series snapshot is 23 requests and about ten seconds.
+
+The row is =[date, open, close, high, low, volume]= -- close *before* high and low. That is the one thing here worth getting wrong quietly, so =parse_bars= maps it positionally and =test_source= pins it against a captured response. Volume is in 手, the same unit =Portfolio.lot_size= already speaks.
+
+Politeness lives in two constants: =DELAY= paces symbols, =RETRIES= retries with exponential backoff, so a dropped connection costs a retry instead of a hole in the snapshot. =refresh= overwrites whole files rather than appending, which is not laziness: a dividend rewrites the entire qfq series, so appending would silently mix adjustment vintages in one file.
+
+#+begin_example
+python source.py                         # the test, offline as usual
+python source.py refresh                 # refresh the whole watchlist
+python source.py refresh 000528 600519   # refresh just these
+#+end_example
+
+*** raw and qfq
+
+Two series are stored per symbol, and the distinction earns its keep:
+
+- =bars/raw/=, unadjusted: the prices actually traded, so a mark matches a broker fill and a replayed ledger reconciles to the cent.
+- =bars/qfq/=, forward-adjusted: continuous across dividends, so returns and momentum are not polluted by ex-dividend price jumps.
+
+=Instrument.bars= is the raw series because marks are raw; =Instrument.adjusted= is there for the modelling layer, which wants returns rather than prices. Raw is also *immutable* history, while qfq is rewritten whenever a dividend lands -- which is why the regression tests pin themselves to raw and to a date in the past, and therefore survive any refresh.
+
+=adjusted= is filtered to the days =raw= has. The two are not always the same length: for 2 of the 11 watchlist names the qfq endpoint lagged raw by a day at the leading edge (no 2026-09-29 bar while raw had one). Intersecting bounds the damage to "the adjusted series is a bar shorter" instead of letting a return built from adjusted closes silently pair with a mark from another day.
+
+*** the window
+
+=gather(as_of, window=60)= keeps the last =window= bars, because the window *is* the lookback: =infer= computes momentum as the return over the window, and an unbounded window would have turned that into a 2.5-year return the moment the store grew past a handful of fixture closes. 60 trading days is roughly a quarter, and =window=None= hands over everything stored for when the modelling layer wants to choose its own lookback.
+
+=as_of= filters bars to that date or earlier, so one snapshot answers both "what does the market look like now" and "what did it look like on 2026-08-25". A symbol with no bars on or before =as_of= is left out, which is the honest answer for a date before its listing.
+
+*** what the snapshot says
+
+A data-quality pass over the store, which is cheap because the data is a directory of CSVs: dates are sorted, there are no duplicate dates, and every bar satisfies =low <= open, close <= high=. All 11 names share one trading calendar, so a day missing from one is a holiday or a data gap rather than a fluke of one symbol. The calendar also emerges from the data -- 2026-09-25 is absent, being Mid-Autumn Festival.
+
+The market vocabulary, still mostly unimplemented:
+
+- [ ] Market: trading venue and rules, such as China A shares.
+- [ ] Universe: the eligible set of instruments at a particular time. (=WATCHLIST= is the thinnest version: a fixed tuple)
+- [x] Instrument(Stock): symbol, exchange, board, sector, listing status, and trading constraints for a stock. (symbol/name/bars so far)
+- [x] Bar: one point-in-time OHLCV observation for one instrument.
+- [ ] PriceHistory: ordered bars, with adjusted/unadjusted semantics. (raw and qfq are both stored, but as two fields rather than a type that enforces the semantics)
+- [ ] Fundamentals: point-in time financial observations.
+- [ ] Macro: macroeconomic or market-wide observations.
+
+other useful concepts, that I still don't know how to integrate:
+- TradingCalendar and TradingSession
+- InstrumentReferenceData
+- DataSource, DataSnapshot, and provenance (=source.py= and =bars/= are the thinnest version: one source, one directory, no recorded fetch date)
+- corporate actions, suspensions, delistings, and adjustment policies
+- data-quality checks and protection against look-ahead/survivorship biases
+
+* book.py
+:PROPERTIES:
+:header-args:python: :session book :results output :kernel notes :exports both
+:END:
+
+: clean up / organize tangles
+: remove "how" to agent instructions
+: create separate repo local and on github, add as subrepo to notes
+: going slower for later sections
+
+The book: cash, positions, and the fills that produced them.
+
+This is the state half of the vocabulary: what you hold, and the history that produced it. Risk *policy* is deliberately not here -- lot size and the weight caps belong to =Rules= in =decide.py=, because they are choices about how to trade rather than facts about the account.
+
+An account is stored as its history -- a deposit, then fills -- and every snapshot is *derived* by replaying that history to a date. Nothing is entered by hand or carried forward: =replay(ledger, as_of)= answers "what did the account look like then" from the same tuple at any moment, which is what a backtest needs and what keeps the state from drifting away from what was actually executed.
+
+The account opens with one 50K cash flow and no positions. There is deliberately no reconstructed broker history: the first fill appended is the first thing the account ever did, so every later number traces back to an execution rather than to a transcription.
+
+A position is a *bag of lots* rather than a quantity and an average price. That one choice is what makes FIFO cost basis and per-lot T+1 availability fall out of the data instead of being tracked alongside it.
+
+#+name: book-import
+#+begin_src python :tangle book.py :results none
+import math
+from dataclasses import dataclass
+from datetime import date
+from enum import Enum
+#+end_src
+
+** how this section is written
+
+The format decided here is the one every later module follows: prose carries the reasoning, code carries the logic, and neither carries the other's weight.
+
+- *Definitions are ordered by the dependence tree.* Each block may use only what is already defined above it, so the tangled file imports cleanly and the section reads bottom-up without forward references.
+- *Every definition is validated immediately after it appears.* The example is part of the explanation, not a chore deferred to the end, which is exactly why the work happens in an interactive language. It runs in the =book= session, so the variables it binds stay live for the examples below.
+- *Examples are not tangled.* Only definitions carry =:tangle book.py=, so the examples never reach the module and =python book.py= does not run them. The tests are done by hand, here, in this file.
+- *Docstrings are one line.* Anything longer is prose, in the section, where it can be read as an argument. A one-line summary survives in the tangled file and in =help()=, which is all a docstring is for.
+- *No machinery.* There is no test framework, no =check_= functions, and no runner. An example is a few lines that assert and print what they saw. Because the session carries state forward, a later example can reuse an earlier variable instead of rebuilding a thin fixture of its own.
+
+** the account
+
+An Account is a point-in-time holding: cash, plus the open positions, plus the derived numbers the decision layer reads -- equity, marked value, weights.
+
+A Position records all the trading actions (in Lots) executed up to that moment, plus the reference price it is marked at.
+
+The two are frozen dataclasses. Immutability is doing real work here rather than being decoration: a session holds one account and one market, and if a step could mutate either, then a later step's arithmetic would depend on the order the steps ran in. Frozen forces a step to build a new value instead, which is why =replay= can be tested by comparing whole accounts and why a check cannot accidentally leave state behind for the next one.
+
+*** money and shares
+
+#+name: book-money
+#+begin_src python :tangle book.py
+type Money = float           # cash, prices, and any amount of money
+type Quantity = int          # a count of shares
+#+end_src
+
+#+RESULTS: book-money
+
+Money is a plain =float=. At this volume -- tens of fills, prices with two decimals, capital under 100K -- float is comfortably exact for the arithmetic that matters: quantities are small integers, so =quantity * price= is correctly rounded, and a sum of a few hundred such terms accumulates no visible error.
+
+What is *not* guaranteed is exactness after a division, so the rule for assertions is a split, and it is used consistently below:
+
+- *Exact =* for quantities, cash, and marked value. These are integer sums, so === is meaningful and a mismatch is a real bug.
+- =math.isclose= for anything divided -- cost per share, weights, returns. These are correctly rounded but not exactly representable, so === would be a coin flip dressed as a test. The probability layer will need the same discipline for every ratio it produces.
+
+If the ledger ever reconciles against a broker statement to the fen, that is the moment to revisit this and move to integer cents. Until then, float keeps the source readable.
+
+*** the lot
+
+#+name: book-lot
+#+begin_src python :tangle book.py
+@dataclass(frozen=True)
+class Lot:
+    """One purchase: shares acquired at a price on a date."""
+
+    purchase_date: date
+    quantity: Quantity
+    price: Money
+#+end_src
+
+#+RESULTS: book-lot
+
+The purchase date is per lot rather than per position, which is what makes T+1 exact: a position accumulated across two days is only partly sellable on the second.
+
+#+begin_src python
+lot = Lot(purchase_date=date(2026, 8, 21), quantity=200, price=11.1)
+assert lot.quantity == 200
+assert lot.price == 11.1
+print(f"lot: {lot.quantity} @ {lot.price} on {lot.purchase_date}")
+#+end_src
+
+#+RESULTS:
+: lot: 200 @ 11.1 on 2026-08-21
+
+*** the position
+
+#+name: book-position
+#+begin_src python :tangle book.py
+@dataclass(frozen=True)
+class Position:
+    """A holding in one instrument: its lots, its name, and its mark."""
+
+    symbol: str
+    name: str
+    lots: tuple[Lot, ...]
+    price: Money
+
+    @property
+    def quantity(self) -> Quantity:
+        return sum(lot.quantity for lot in self.lots)
+
+    @property
+    def value(self) -> Money:
+        """Marked value: what the position is worth right now."""
+        return self.quantity * self.price
+
+    @property
+    def cost(self) -> Money:
+        """Average cost per share, weighted over the lots."""
+        total = sum(lot.quantity * lot.price for lot in self.lots)
+        return total / self.quantity if self.quantity else 0.0
+
+    @property
+    def pnl(self) -> Money:
+        """Unrealised profit and loss against the cost basis."""
+        return self.value - self.cost * self.quantity
+
+    def available(self, as_of: date) -> Quantity:
+        """Shares sellable under T+1: whose lot predates ``as_of``."""
+        return sum(lot.quantity for lot in self.lots
+                   if lot.purchase_date < as_of)
+#+end_src
+
+#+RESULTS: book-position
+
+`price` is the mark the position was valued at, supplied by the caller because the book does not know about markets. Storing it rather than looking it up makes `value` a total property, so one position cannot be priced two different ways inside one session.
+
+`available` is *strictly* before `as_of`, so a lot bought today is not sellable today; and the date is a parameter rather than a clock reading, so the same position answers for any past or future moment. `cost` is a weighted average over the lots and is derived rather than stored -- no stored average can disagree with the lots it came from.
+
+#+begin_src python
+lots = (Lot(date(2026, 8, 20), 200, 11.1),
+        Lot(date(2026, 8, 21), 100, 8.7))
+position = Position("TEST", "Test", lots, price=12.0)
+
+assert position.quantity == 300
+assert position.value == 3600.0                    # 300 * 12.0, exact
+assert math.isclose(position.cost, 10.3)           # 3090 / 300, a division
+assert math.isclose(position.pnl, 3600.0 - 3090.0) # marked minus cost
+# T+1 is per lot: on the 21st only the older 200 shares are sellable.
+assert position.available(date(2026, 8, 21)) == 200
+assert position.available(date(2026, 8, 22)) == 300
+print(f"position: {position.quantity} sh, value {position.value:.2f}, "
+        f"cost {position.cost:.2f}")
+#+end_src
+
+#+RESULTS:
+: position: 300 sh, value 3600.00, cost 10.30
+
+*** the account
+
+#+name: book-account
+#+begin_src python :tangle book.py
+@dataclass(frozen=True)
+class Account:
+    """Cash plus open positions: the account at one moment."""
+
+    cash: Money
+    positions: tuple[Position, ...]
+
+    @property
+    def value(self) -> Money:
+        """Marked value of the positions alone, excluding cash."""
+        return sum(position.value for position in self.positions)
+
+    @property
+    def equity(self) -> Money:
+        return self.cash + self.value
+
+    @property
+    def cash_weight(self) -> Money:
+        """Cash as a share of equity, zero for an emptied account."""
+        return self.cash / self.equity if self.equity else 0.0
+
+    def position(self, symbol: str) -> Position:
+        """The position in ``symbol``; a missing one is a lookup error."""
+        for position in self.positions:
+            if position.symbol == symbol:
+                return position
+        raise KeyError(f"no position for symbol: {symbol}")
+
+    def weight(self, symbol: str) -> Money:
+        """The position's share of equity, zero for an emptied account."""
+        return self.position(symbol).value / self.equity if self.equity else 0.0
+#+end_src
+
+#+RESULTS: book-account
+
+=Account= is state only. Every risk limit lives in =decide.Rules=, so this type cannot quietly carry a policy into a function that has no business seeing one.
+
+There is no duplicate-symbol check, unlike the old =Portfolio=. Positions come from =replay='s dict of symbol to lots, and a dict cannot contain a duplicate key, so such a check would guard a state that cannot occur.
+
+=weight= and =cash_weight= are 0 for an emptied account rather than a division error. Equity *is* cash plus marked value, so zero equity means every weight is zero; dividing anyway would raise where the state itself is perfectly describable.
+
+#+begin_src python
+position = Position("TEST", "Test", (Lot(date(2026, 8, 20), 300, 8.0),),
+                    price=10.0)
+account = Account(cash=20000.0, positions=(position,))
+
+assert account.value == 3000.0            # the position alone
+assert account.equity == 23000.0          # plus cash
+assert math.isclose(account.weight("TEST"), 3000.0 / 23000.0)
+assert math.isclose(account.cash_weight, 20000.0 / 23000.0)
+
+# An emptied account is describable, not a division error.
+empty = Account(cash=0.0, positions=())
+assert empty.equity == 0.0
+assert empty.cash_weight == 0.0
+
+# An unknown symbol fails loudly by name.
+try:
+    account.position("999999")
+except KeyError as error:
+    assert "999999" in str(error)
+else:
+    assert False, "expected KeyError for an unknown symbol"
+
+print(f"account: equity {account.equity:.2f}, "
+        f"cash {account.cash_weight:.1%}")
+#+end_src
+
+#+RESULTS:
+: account: equity 23000.00, cash 87.0%
+
+** the ledger
+
+The account is stored as its history, and every snapshot is derived from it. Two entry types, a union, and one fold.
+
+*** which way a fill moves
+
+#+name: book-side
+#+begin_src python :tangle book.py
+class Side(Enum):
+    """Which way an order or fill moves a position."""
+
+    BUY = "buy"
+    SELL = "sell"
+
+    @property
+    def sign(self) -> int:
+        """The direction as a number: buys add shares, sells remove them."""
+        return 1 if self is Side.BUY else -1
+#+end_src
+
+=Side= belongs here rather than beside =Lot=, because nothing about a lot needs a direction: a lot is always something you bought. A =Fill= is the first type that needs to know which way it went, so =Side= sits directly above it in the dependence tree.
+
+=sign= writes the cash arithmetic once, so =cash_delta= needs no buy/sell branch below: a sale's proceeds are a purchase's cost with the direction flipped.
+
+#+begin_src python
+assert Side.BUY.sign == 1
+assert Side.SELL.sign == -1
+print(f"side: {Side.BUY.value} {Side.BUY.sign}, "
+      f"{Side.SELL.value} {Side.SELL.sign}")
+#+end_src
+
+*** cash flow
+
+#+name: book-cash-flow
+#+begin_src python :tangle book.py
+@dataclass(frozen=True)
+class CashFlow:
+    """Cash entering (positive) or leaving (negative) the account."""
+
+    date: date
+    amount: Money
+#+end_src
+
+A deposit and a withdrawal are one event with opposite signs, so a single entry covers both -- and, later, dividends and fees.
+
+#+begin_src python
+deposit = CashFlow(date(2026, 8, 20), 50000.0)
+withdrawal = CashFlow(date(2026, 8, 20), -50000.0)
+
+assert deposit.amount == 50000.0
+assert deposit.amount == -withdrawal.amount
+print(f"cash flow: {deposit.amount:+.2f} on {deposit.date}")
+#+end_src
+
+*** fill
+
+#+name: book-fill
+#+begin_src python :tangle book.py
+@dataclass(frozen=True)
+class Fill:
+    """One execution: what the broker actually did."""
+
+    symbol: str
+    date: date
+    side: Side
+    quantity: Quantity
+    price: Money
+
+
+type Entry = CashFlow | Fill
+type Ledger = tuple[Entry, ...]     # ordered oldest first
+#+end_src
+
+A fill carries the *executed* price, so it also records the slippage against the order's reference price (=fill.price - order.price=). A partial fill is just a fill: the ledger records what happened, not what was asked for.
+
+=Order= deliberately does not live here. An order is an intention, and only its fill moves money, so an order that never fills leaves no trace -- which is exactly how a cancelled or rejected order should behave.
+
+=Ledger= is a plain tuple, not a class: order is the only structure it has, and =replay= is the only operation.
+
+#+begin_src python
+buy = Fill("TEST", date(2026, 8, 21), Side.BUY, 1000, 10.0)
+sell = Fill("TEST", date(2026, 8, 25), Side.SELL, 400, 12.0)
+ledger: Ledger = (CashFlow(date(2026, 8, 20), 20000.0), buy, sell)
+
+assert buy.side is Side.BUY
+assert buy.quantity == 1000
+assert [entry.date for entry in ledger] == sorted(
+    entry.date for entry in ledger)
+print(f"fill: {buy.side.value} {buy.quantity} @ {buy.price}, "
+      f"ledger of {len(ledger)} entries")
+#+end_src
+
+*** the account history
+
+#+name: book-ledger
+#+begin_src python :tangle book.py
+# The account's history, oldest first: one opening deposit and no positions.
+# Trading records grow by appending here -- a fill is what actually happened,
+# so the next session replays this tuple and cannot drift from reality.
+LEDGER: Ledger = (
+    CashFlow(date(2026, 8, 20), 50000.0),
+)
+#+end_src
+
+There is no reconstructed broker snapshot in this tuple, which is informative rather than a gap: every position the system ever reports is one this ledger built from a fill it recorded. The cost of that honesty is that the account starts flat, so the first session has nothing to sell.
+
+This is also the one piece of data, rather than logic, in the module, so it is the one example about dates and growth: the opening tuple holds exactly one entry, a replay before the deposit sees nothing, and a second ledger shows the shape once trading begins. Every example below reuses =entry=, =later=, =names=, and =prices= from here.
+
+#+begin_src python
+entry, = LEDGER
+assert isinstance(entry, CashFlow)
+assert entry.amount == 50000.0
+
+# Two months of trading, appended. The second buy is at a *different* price on
+# purpose: it is what gives the lot book something to sort.
+BUY_A, BUY_B, SELL_A = date(2026, 9, 1), date(2026, 9, 8), date(2026, 9, 15)
+ledger_grown: Ledger = LEDGER + (
+    Fill("000528", BUY_A, Side.BUY, 1000, 10.0),
+    Fill("600036", BUY_B, Side.BUY, 1000, 40.0),
+    Fill("000528", SELL_A, Side.SELL, 400, 12.0),
+)
+names = {"000528": "A", "600036": "B"}
+prices = {"000528": 11.0, "600036": 39.0}
+later = date(2026, 9, 20)
+print(f"ledger: {len(LEDGER)} entry then {len(ledger_grown)}")
+#+end_src
+
+** replay: history into state
+
+Replay is two independent folds, which is the nicest part of the design.
+
+1. =cash_delta(entry)= gives each entry's signed cash effect, and cash is just their sum. A sale's proceeds do not depend on which lot it consumed, so cash never needs to know about matching.
+2. =lot_book(fills)= is the FIFO fold of the fills alone. =sell_lots(lots, quantity, as_of)= consumes the open lots oldest first, skipping any lot not yet available under T+1, and raising if the sale cannot be covered rather than inventing shares. Symbols sold out entirely are dropped, so the book is exactly the set of open positions.
+
+=replay= is deliberately not given the market, only the two lookups it needs. A symbol missing from =names= or =prices= raises =KeyError=, and that is the failure we want: a holding the market does not know about is a bug downstream, not a position worth zero.
+
+Entries dated after =as_of= are ignored, so one ledger answers for any moment -- that is the backtest door.
+
+*** the signed cash effect
+
+#+name: book-cash-delta
+#+begin_src python :tangle book.py
+def cash_delta(entry: Entry) -> Money:
+    """The signed cash effect of one entry, independent of the lot book."""
+    match entry:
+        case CashFlow(amount=amount):
+            return amount
+        case Fill(side=side, quantity=quantity, price=price):
+            return side.sign * -quantity * price
+#+end_src
+
+Cash never needs to know which lot a sale consumed, so this is the sum of the flows rather than a side effect of matching. The =match= makes that literal: the two cases are exhaustive over =Entry=, so there is no branch for "some other kind of entry".
+
+#+begin_src python
+assert cash_delta(entry) == 50000.0                  # the opening deposit
+assert cash_delta(Fill("000528", BUY_A, Side.BUY, 1000, 10.0)) == -10000.0
+assert cash_delta(Fill("000528", SELL_A, Side.SELL, 400, 12.0)) == 4800.0
+print("cash delta: +50000.00 deposit, -10000.00 buy, +4800.00 sell")
+#+end_src
+
+*** consuming lots in FIFO order
+
+#+name: book-sell-lots
+#+begin_src python :tangle book.py
+def sell_lots(lots: tuple[Lot, ...], quantity: Quantity,
+              as_of: date) -> tuple[Lot, ...]:
+    """Consume available lots in FIFO order, oldest first."""
+    remaining = quantity
+    result = []
+    for lot in lots:
+        consumed = min(lot.quantity, remaining) \
+            if remaining and lot.purchase_date < as_of else 0
+        remaining -= consumed
+        if lot.quantity > consumed:
+            result.append(Lot(lot.purchase_date, lot.quantity - consumed,
+                              lot.price))
+    if remaining:
+        raise ValueError(f"not enough shares available to sell: {remaining}")
+    return tuple(result)
+#+end_src
+
+A lot bought on =as_of= is not yet available under T+1, so it is skipped. If the older lots cannot cover the sale, the ledger is wrong and we say so loudly rather than inventing shares.
+
+#+begin_src python
+# A partial sale consumes the oldest lot and leaves the newer one partly
+# standing: 250 of 300 leaves 50, still at the newer lot's price.
+left = sell_lots(position.lots, 250, date(2026, 8, 22))
+assert [lot.quantity for lot in left] == [50]
+assert left[0].price == 8.7
+
+assert sell_lots(position.lots, 300, date(2026, 8, 22)) == ()
+
+# T+1: on the 21st the newer lot is not sellable, so only the older 200 is.
+try:
+    sell_lots(position.lots, 250, date(2026, 8, 21))
+except ValueError as error:
+    assert "not enough shares" in str(error)
+else:
+    assert False, "today's lot should not be available under T+1"
+
+print(f"sell lots: 250 of 300 leaves {[lot.quantity for lot in left]}"
+      f" @ {left[0].price}")
+#+end_src
+
+*** folding fills into a lot book
+
+#+name: book-lot-book
+#+begin_src python :tangle book.py
+def lot_book(fills: tuple[Fill, ...]) -> dict[str, tuple[Lot, ...]]:
+    """Fold fills into open lots per symbol: buys open, sells consume FIFO."""
+    book: dict[str, list[Lot]] = {}
+    for fill in fills:
+        if fill.side is Side.BUY:
+            book.setdefault(fill.symbol, []).append(
+                Lot(fill.date, fill.quantity, fill.price))
+        else:
+            book[fill.symbol] = list(sell_lots(
+                tuple(book.get(fill.symbol, ())), fill.quantity, fill.date))
+    return {symbol: tuple(lots) for symbol, lots in book.items() if lots}
+#+end_src
+
+Symbols whose lots have all been sold are dropped, so the book is exactly the set of open positions -- there is no "closed but remembered" state to filter out later.
+
+#+begin_src python
+# The grown ledger's fills: both names keep their remaining lots.
+book = lot_book(tuple(e for e in ledger_grown if isinstance(e, Fill)))
+assert set(book) == {"000528", "600036"}
+assert [lot.quantity for lot in book["000528"]] == [600]
+assert [lot.quantity for lot in book["600036"]] == [1000]
+assert book["000528"][0].price == 10.0        # the first lot, partly consumed
+assert book["600036"][0].price == 40.0        # a second name at its own price
+
+# A symbol sold out entirely leaves no entry behind.
+closed = lot_book((Fill("000528", BUY_A, Side.BUY, 1000, 10.0),
+                   Fill("000528", SELL_A, Side.SELL, 1000, 12.0)))
+assert closed == {}
+
+print(f"lot book: {sorted(book)}, 000528 {[l.quantity for l in book['000528']]}")
+#+end_src
+
+*** the fold itself
+
+#+name: book-replay
+#+begin_src python :tangle book.py
+def replay(ledger: Ledger, as_of: date, *,
+           names: dict[str, str],
+           prices: dict[str, Money]) -> Account:
+    """Fold the ledger into the account state at ``as_of``."""
+    entries = [entry for entry in ledger if entry.date <= as_of]
+    cash = sum(cash_delta(entry) for entry in entries)
+    lots = lot_book(tuple(entry for entry in entries
+                          if isinstance(entry, Fill)))
+    positions = tuple(Position(symbol, names[symbol], open_lots,
+                               prices[symbol])
+                      for symbol, open_lots in lots.items())
+    return Account(cash, positions)
+#+end_src
+
+Two things about the shape are deliberate. The prices and names are keyword-only, so a caller cannot swap them by position. And the filter is =entry.date <= as_of=, not =<==, because an entry dated exactly =as_of= has happened by the end of that day.
+
+#+begin_src python
+# The opening account: 50K, and nothing has happened yet.
+opening = replay(LEDGER, date(2026, 8, 25), names=names, prices=prices)
+assert opening.cash == 50000.0
+assert opening.positions == ()
+
+# Two months on, from the same ledger: one deposit, two buys, one sell.
+account = replay(ledger_grown, later, names=names, prices=prices)
+assert account.cash == 4800.0           # 50000 - 10000 - 40000 + 4800
+assert {p.symbol for p in account.positions} == {"000528", "600036"}
+assert account.position("000528").quantity == 600
+assert account.value == 6600.0 + 39000.0      # 600*11.0 + 1000*39.0
+assert account.equity == 4800.0 + 45600.0
+assert math.isclose(account.weight("000528"), 6600.0 / account.equity)
+assert account.position("000528").available(later) == 600
+
+# `as_of` is a filter: on 2026-09-10 the sell has not happened yet, so the
+# account is exactly the deposit minus the two buys.
+before_sale = replay(ledger_grown, date(2026, 9, 10), names=names,
+                     prices=prices)
+assert before_sale.position("000528").quantity == 1000
+assert before_sale.cash == 0.0
+
+# ...and the day before the deposit there is nothing at all, because `<=`
+# includes the deposit itself.
+assert replay(LEDGER, date(2026, 8, 19), names=names,
+              prices=prices).cash == 0.0
+
+# T+1 on the day of the buy: the shares exist but are not sellable, and a
+# same-day sale is an error rather than a negative position.
+on_buy_day = replay(ledger_grown, BUY_A, names=names, prices=prices)
+assert on_buy_day.position("000528").quantity == 1000
+assert on_buy_day.position("000528").available(BUY_A) == 0
+try:
+    replay((Fill("000528", BUY_A, Side.BUY, 100, 10.0),
+            Fill("000528", BUY_A, Side.SELL, 100, 12.0)),
+           BUY_A, names=names, prices=prices)
+except ValueError as error:
+    assert "not enough shares" in str(error)
+else:
+    assert False, "same-day sale should not be available under T+1"
+
+print(f"replay: cash {account.cash:.2f}, equity {account.equity:.2f}, "
+      f"000528 {account.position('000528').quantity} sh")
+#+end_src
+
+** cash
+
+Cash is one running balance: the sum of the =CashFlow= entries and the fills. My initial plan was simply liquidity in the portfolio, but maybe it can be something richer.
+
+I'm still not sure what =Cash= should hold, so the split is deferred:
+
+- [ ] settled / reserved / unsettled
+- [ ] pending orders and reserved cash
+- [ ] deposits, withdrawals, dividends, and corporate actions
+- [ ] broker/account reconciliation
+
+** order & fill
+
+order is what we intend to do, fill is what actually happens. A fill may be complete, partial, rejected, or delayed. Sales are sell fills, not negative purchase lots; a sell fill consumes open purchase lots in FIFO order.
+
+The difference between order and fill is the slippage. A =Fill= does not yet reference the =Order= it came from, so slippage cannot be recovered automatically -- see next steps.
+
+Each position is the accumulative run of a series of historical purchases, and the cost is averaged over them. That is now literally true: the position is a tuple of =Lot= objects, and =cost= is their weighted average.
+
+** next steps
+1. DONE: each position is represented by one or more purchase lots, each with a purchase date and price. The initial portfolio uses one old lot per stock.
+2. DONE: positions are a holding of a given moment, derived from the full ledger of fills and cash flows by =replay=, instead of entered by hand.
+3. DONE: orders are made in =trade.py=, and the portfolio is updated by appending the resulting fills to the ledger.
+4. for orders there is also the planned order, and the actual one. (is this difference slippage?) still open: a =Fill= does not yet reference the =Order= it came from, so slippage cannot be recovered automatically.
+5. TODO: fees, commissions, and stamp duty, either as a =Fill= field or as a negative =CashFlow=. (These are also extra vocabulary: Transaction, LedgerEntry.)
+6. TODO: realised vs unrealised P&L. =replay= consumes lots, so the realised leg is computable, but it is not booked anywhere yet.
+7. TODO: persist the ledger (CSV, Org table, DuckDB) rather than editing a Python literal in =retrieve.py=.
+8. TODO: Trade, a logical round trip or lifecycle grouping of orders and fills.
+9. reconsider float vs integer cents when the ledger must reconcile to the fen.
+
+* decide.py
+
+TODO: rewrite from =infer.py= and =rebalance.py=. Takes =Rules= explicitly; returns signals and orders, never touches the account's policy fields.
+
+** evaluate: performance and risk
+
+=evaluate.py=. =evaluate(portfolio)= summarises the constraints into a =Metrics=:
+
+#+begin_src python
+@dataclass(frozen=True)
+class Metrics:
+    equity: Price
+    cash_weight: Decimal
+    max_weight: Decimal
+    issues: tuple[str, ...]
+#+end_src
+
+It is a static analysis of the current holdings: =Portfolio.equity=, =cash / equity=, the largest =Portfolio.weight(symbol)=, and =Portfolio.issues()= -- the list of warnings ("cash below minimum", "<name>(<symbol>) is overweight").
+
+The =default= argument to =max()= is not defensiveness: an account holding only cash is a real state, and =max()= over an empty sequence would raise on it.
+
+This step is deliberately thin. The portfolio is a snapshot of a trading history, so real performance evaluation needs the current holding, the current price, and the complete buying/selling history -- and the ledger now has that history.
+
+- [ ] risk, exposure, drawdown as first-class numbers
+- [ ] realised vs unrealised P&L, from the FIFO sells =replay= already performs
+- [ ] return attribution per name and per strategy
+- [ ] benchmark comparison, and the equity curve over time
+
+TODO extend to the whole performance eval of all investment to date.
+
+** infer: investment beliefs
+
+=infer.py=. =infer(market)= turns a =Market= into =Beliefs=, a =dict[str, Belief]= keyed by symbol.
+
+#+begin_src python
+@dataclass(frozen=True)
+class Belief:
+    symbol: str
+    expected_return: Price       # over the window in `closes`
+#+end_src
+
+Two fields is the whole discipline of this layer: =rebalance= can only see the =Belief=, never the raw prices. The current model is naive momentum -- the return over the observed window -- i.e. "the recent past repeats". It is deliberately dumb, but it is structurally real: one number per name, computed from the market and nothing else. Swap the body, keep the signature.
+
+Two things about this model changed when =gather= became real, and neither was a code change:
+
+- The window is now =gather='s =WINDOW= (60 trading days, about a quarter) rather than "however many closes the fixture happened to have". =closes[0] / closes[-1]= always meant "the return over the window"; it just was not obvious that the window was a *choice* until the window became larger than four.
+- It reads =closes=, i.e. raw unadjusted closes, and ignores both =adjusted_closes= and the rest of the OHLCV bars. That is now a modelling decision with a cost: raw closes carry ex-dividend jumps, and 高=low=, =open=, and =volume= are all unread. The data is in =Instrument=; the signals are not yet.
+
+The inference vocabulary:
+
+- [ ] Signal: evidence, or a transformed feature
+- [x] Belief: current probabilistic state, after combining evidence and prior info (one =expected_return= so far)
+- [ ] Prediction: a forecast, tied to an instrument, horizon, target, and probability distribution, and possibly calibration information.
+- [ ] Scenario: a coherent possible future path or portfolio outcome.
+
+A managerie of strategies can be freely selected and combined later, as long as they all reduce to a =Belief=. The obvious first portfolio of them: a window chosen per horizon rather than fixed, returns from =adjusted_closes= instead of =closes=, and a volatility estimate from =high= and =low= -- which is what the OHLCV bars were fetched for.
+
+** rebalance: beliefs into orders
+
+=rebalance.py=. =rebalance(portfolio, beliefs, market, as_of)= turns beliefs and constraints into a batch of =Order=.
+
+#+begin_src python
+@dataclass(frozen=True)
+class Order:
+    symbol: str
+    name: str
+    side: Side
+    quantity: int                # whole lots, or a full odd-lot exit
+    price: Price                 # reference mark, for the ticket only
+    reason: str                  # human-readable "why", shown on the ticket
+#+end_src
+
+An order is an intention, not an execution. =Order.value= is =quantity * price=, and slippage will be exactly =fill.price - order.price=, which is why an order carries a reference price and nothing else about the future.
+
+- =sell_order(portfolio, position, beliefs, as_of)= exits a name whose =expected_return= has turned non-positive (using =Position.available=, since T+1 applies on the way out too), or trims it back to the cap with =Portfolio.shares_to_sell_to_cap=. =legal_sell= then makes the size legal: whole lots, except that an odd-lot holding may be sold in full when the order closes it (the A-share 零股 rule). Without it a partial sell could emit 650 of 750 shares, which no broker accepts.
+- =buy_orders(portfolio, beliefs, market, sells)= spends the cash the sells free, one equal slot per new name, ranked by =expected_return=. Three details worth keeping: a name whose smallest legal lot already breaks the cap is dropped *before* the budget is split (otherwise it silently eats cash it can never spend); the budget is clamped to one cap per new name, because trading at the mark leaves equity unchanged and an unclamped slot put 90% of a cash-rich account into a single name; and lot counts use =to_integral_value(ROUND_FLOOR)= because =int(x / y)= truncates toward zero and =round()= is banker's rounding.
+- Sells come first: in the A-share market the proceeds are immediately reusable for buying, they just cannot be withdrawn until T+1.
+- =rebalance= drops zero-quantity sell orders, so a "do nothing" name leaves no line on the ticket.
+- =check_batch(portfolio, orders, market, as_of)= asserts what the batch itself promises -- legal lot sizes, sells before buys, no buy above the cap, no negative post-trade quantity -- and *returns* whatever T+1 makes unfixable rather than asserting it away. A same-day 30% position cannot be trimmed today; that is risk to report, not a crash.
+
+Still open in the decision layer:
+
+- [ ] Policy, Strategy, Allocator as separate, selectable objects
+- [ ] position sizing beyond "one equal slot per new name"
+- [ ] risk as a first-class constraint, not a warning string
+- [ ] OrderStatus, OrderType, cancellation, amendment, and rejection
+- [ ] speculative/limit orders: current price is 5, sell/buy if it drops to 4.8
+
+Question: should we allow speculative orders at all, given that =rebalance= currently prices everything at one mark?
+
+* report.py
+
+TODO: rewrite from =evaluate.py= and =render.py=. The human interface: the risk picture, then the ticket.
+
+** render: the ticket
+
+The ticket below is the real snapshot's session at 2026-08-25, abbreviated:
+
+#+begin_example
+SELL 000528 柳工        3,000 @ 8.120 =    24,360.00   momentum -9.58%
+SELL 601226 华电科工    1,000 @ 6.500 =     6,500.00   momentum -15.14%
+...
+BUY  000001 平安银行    1,000 @ 11.590 =    11,590.00   momentum +4.60%
+...
+8 orders | sell 43,812.00 | buy 34,442.00 | net 9,370.00
+#+end_example
+
+- =pad(text, width)= left-justifies to a *display* width, counting CJK glyphs as two columns with =unicodedata.east_asian_width=. =f"{text:<8}"= counts code points, so Chinese names come out ragged in every terminal.
+- The last line nets sells against buys, which is the cash the batch frees.
+- =trade.main= prints =Metrics= before the ticket, then calls =check_batch= for the batch's own guarantees and reports any position that T+1 still leaves over the cap.
+- The =reason= column is the deciding rule, not a label: =momentum -9.58%= means the exit came from the signal, while =overweight= would mean it came from the cap. On this session every sale says =momentum=, which is the honest summary of a quarter that was down for most of the book.
+
+* backtesting
+
+The one design decision that makes backtesting possible is already everywhere: functions take =as_of= instead of reading a clock. =replay= filters the ledger at =as_of=, =Position.available= and =Portfolio.shares_to_sell_to_cap= use it for T+1, and =trade(as_of)= threads it through to =gather(as_of)=, so a session cannot see a bar after its own date.
+
+The dated data source is now real: =gather(as_of)= answers from the stored snapshot, so replaying a past date is a matter of feeding hypothetical fills back into a ledger. The snapshot already holds 640 bars per name, so there is history to backtest over without fetching anything.
+
+Still to build:
+
+- [ ] Backtest: replay a ledger against historical =gather(as_of)= data (the data side now exists; the replay driver does not)
+- [ ] Simulation: fill an =Order= under stated assumptions (slippage, partial fills)
+- [ ] Execution: out of scope, done by hand
+- [ ] Bar: market data for one symbol, point-in-time, to date
+- [ ] corporate actions and adjustment policies
+
+* Research Chinese stock market
+
+We need a deep research on all the characteristics of the Chinese stock market. It's important to understand the general market, the specific sectors and stocks, the players in the market, the general earning prospects, etc.
+
+I have heard people complain that the Chinese stock market is purely gambling, and even worse, it's a rigged gambling system. I need to know if, and to what extent, this is true, and if I actually have an edge as a Bayesian statistician.
+However this can only be realistically understood after the system is built and I have run some investment experiements myselves, so I'll leave it here for now.
+
+the Chinese market is regime-dependent and policy-driven. how to understand this.
+
+** Chinese stock market: key characteristics
+
+*** Scope and structure
+- *Mainland A-shares*: Shanghai (SSE), Shenzhen (SZSE), Beijing (BSE). RMB-denominated, mostly domestic investors.
+- *B-shares*: foreign-currency shares, largely obsolete/illiquid.
+- *Hong Kong H-shares / red chips / P-chips*: offshore listings of Chinese companies.
+- *US ADRs / VIE structures*: many tech/internet names, subject to geopolitical and audit risk.
+- *Regulators*: CSRC, PBOC, SAFE, NDRC, State Council. Policy signals often matter more than fundamentals in the short run.
+
+*** Trading rules and frictions
+- *T+1*: you cannot sell A-shares bought the same day.
+- *Price limits*: main board ±10%, ChiNext/STAR ±20%, BSE ±30%. ST stocks ±5%.
+- *Lot size*: usually 100 shares.
+- *Short selling*: possible via margin/securities lending, but constrained and often expensive.
+- *IPO regime*: moved from approval-based to registration-based (STAR, ChiNext, BSE, then main board). Still heavy state influence.
+- *Delisting*: historically rare, now increasing, but still not US-like.
+- *Trading suspensions*: historically used to avoid crashes; less common now but still a risk.
+
+*** Investor base
+- *Retail investors*: dominate trading volume (roughly 60–80% depending on period), high turnover, momentum/theme-driven.
+- *Institutions*: public mutual funds, private funds, quant funds, insurance, pensions, National Social Security Fund.
+- *State players*: Central Huijin, China Securities Finance Corp (“national team”) can intervene to stabilize markets.
+- *Foreign investors*: via Stock Connect (Northbound/Southbound), QFII/RQFII. Northbound flow is a watched signal.
+
+*** Market composition and sectors
+- *Indices*: SSE Composite, CSI 300, CSI 500, CSI 1000, ChiNext, STAR 50, Hang Seng, MSCI China.
+- *Heavy weights*: financials (banks, insurance, brokers), industrials, materials, energy, consumer staples (especially liquor), healthcare.
+- *Growth themes*: EVs, batteries, solar, semiconductors, AI, defense, high-dividend SOEs.
+- *Distressed areas*: real estate, local government financing vehicles, some consumer discretionary.
+
+*** Earnings prospects and macro
+- *Macro*: slowing growth, property crisis, local debt overhang, deflationary pressure, weak consumer confidence, export resilience, geopolitical tension.
+- *Policy themes*: “common prosperity,” SOE reform, “Sino-specific valuation” (中特估), high dividend, tech self-sufficiency, stimulus.
+- *Sector outlooks*:
+  - *Banks/SOEs*: cheap, high dividend, but slow growth and hidden credit risk.
+  - *Consumer*: recovery uncertain; premium liquor resilient, mass market under pressure.
+  - *Tech/Semis*: policy support vs. US restrictions; high volatility.
+  - *New energy*: oversupply and price wars in solar/EV, but long-term growth.
+  - *Real estate*: restructuring, high risk, policy-dependent.
+
+*** Is it “gambling” or “rigged”?
+- *Not purely random*: returns show factor structure (size, value, reversal, momentum, quality, low volatility, turnover), policy cycles, liquidity effects, and sentiment cycles.
+- *But structurally disadvantaged for retail*:
+  - Information asymmetry (insiders, state, large funds).
+  - T+1, price limits, shorting constraints create asymmetric payoffs.
+  - IPO underpricing, lockups, insider selling, related-party transactions.
+  - Weak minority shareholder protection, accounting fraud (e.g., Kangmei), earnings management.
+  - Policy intervention and “national team” buying can distort prices.
+  - Market manipulation, “pump and dump,” and theme speculation are common.
+- *Verdict*: it is not a literal casino, but it is a heavily regulated, policy-driven, friction-heavy market where retail often loses. A Bayesian statistician can have an edge, but only with:
+  - Point-in-time data, survivorship-bias-free universes.
+  - Realistic trading rules (T+1, limits, costs, capacity).
+  - Regime-switching models, robust priors, Bayesian model averaging.
+  - Awareness of non-stationarity and policy shocks.
+  - Niche strategies: small-cap quant, event-driven, AH/ETF arbitrage, convertible bonds, statistical arb.
+
+---
+
+** next step
+
+If you want, I can outline a concrete research plan: data sources, factor library, backtest engine rules, and a Bayesian framework for regime detection and position sizing.
+
+** 前复权 (qfq) and 后复权 (hfq)                            :fc:
+:PROPERTIES:
+:FC_CREATED: 2026-09-30T08:27:07Z
+:FC_TYPE:  cloze
+:FC_ALGO:  sm2
+:ID:       731d9e85-63d8-45b8-8696-c0c4a0b9557a
+:FC_CLOZE_MAX: 1
+:FC_CLOZE_TYPE: deletion
+:END:
+:REVIEW_DATA:
+| position | ease | box | interval | due                  |
+|----------+------+-----+----------+----------------------|
+|        0 | 2.50 |   3 |     6.00 | 2026-10-16T07:48:28Z |
+|        1 | 2.50 |   3 |     6.00 | 2026-10-16T09:09:56Z |
+:END:
+
+These are *price adjustment methods* for {{dividends, splits, and rights issues}@0}. They remove artificial gaps so charts and returns are continuous.
+
+qfq anchors to the latest, hfq anchors to the {{earliest}@1}.
+
+- *For trading*: use raw prices for orders, limits, and execution.
+- *For charting*: use qfq for clean technical patterns and current price context.
+- *For backtesting/returns*: use hfq or raw + cumulative adjustment factors.
+- *For quant*: store raw prices and 复权因子 (adjustment factors). Compute total returns yourself. This avoids vendor inconsistencies and look-ahead bias.
+- *Pitfalls*: vendors differ on dividend tax, rights issues, and rounding. qfq can even show negative historical prices if cumulative dividends exceed the price.
+
+Never use qfq for long-term return calculations unless you explicitly account for the changing anchor.
+*** 不复权 (raw)
+Actual traded prices. Use for:
+- Order execution, limit prices, actual market microstructure.
+- Volume, spread, tax lots.
+
+*** 前复权 (qfq) — “forward/previous adjustment”
+- *Anchor*: the *latest* price is unchanged (equals raw current price).
+- *Historical prices* are adjusted downward/upward to remove ex-dividend/ex-rights gaps.
+- *Useful for*: technical analysis, chart patterns, current price reference, setting alerts, visual continuity.
+- *Caveat*: qfq history *changes* whenever a new dividend/split occurs, because the anchor is the present. So cached qfq data becomes stale.
+
+*** 后复权 (hfq) — “backward/post adjustment”
+- *Anchor*: the *earliest* price is unchanged.
+- *Later prices* are adjusted upward to reflect cumulative dividends/splits.
+- *Useful for*: backtesting, performance measurement, total return calculation, long-term charts, comparing cumulative returns across stocks.
+- *Caveat*: hfq prices are not real traded prices and are often much higher than raw.
+
+*** Simple example (one cash dividend, D=5)
+Raw: Day0 = 100, Day1 ex = 95, Day2 = 100.
+
+| Day | Raw | qfq | hfq |
+|-----|-----|-----|-----|
+| 0   | 100 | 95  | 100 |
+| 1   | 95  | 95  | 100 |
+| 2   | 100 | 100 | 105.26 |
+
+- qfq removes the drop on Day1; current price stays raw.
+- hfq keeps Day0=100 and scales later prices by the cumulative adjustment factor (assuming dividend reinvestment). The total return from Day0 to Day2 is 5.26% in both qfq and hfq.
+* A-share rules to encode
+
+- A shares can only be purchased in 100-share lots. (=Portfolio.lot_size=)
+- it's T+1: stock bought today can only be sold next day. (=Position.available=, =sell_lots=)
+- main-board stocks have a 10% price change limit.
+
+主板风险警示股票？
