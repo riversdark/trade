@@ -3,8 +3,10 @@ from dataclasses import dataclass
 from datetime import date
 from enum import Enum
 
+
 type Money = float           # cash, prices, and any amount of money
 type Quantity = int          # a count of shares
+
 
 @dataclass(frozen=True)
 class Lot:
@@ -13,6 +15,7 @@ class Lot:
     purchase_date: date
     quantity: Quantity
     price: Money
+
 
 @dataclass(frozen=True)
 class Position:
@@ -48,6 +51,7 @@ class Position:
         return sum(lot.quantity for lot in self.lots
                    if lot.purchase_date < as_of)
 
+
 @dataclass(frozen=True)
 class Account:
     """Cash plus open positions: the account at one moment."""
@@ -80,6 +84,15 @@ class Account:
         """The position's share of equity, zero for an emptied account."""
         return self.position(symbol).value / self.equity if self.equity else 0.0
 
+
+@dataclass(frozen=True)
+class CashFlow:
+    """Cash entering (positive) or leaving (negative) the account."""
+
+    date: date
+    amount: Money
+
+
 class Side(Enum):
     """Which way an order or fill moves a position."""
 
@@ -91,12 +104,6 @@ class Side(Enum):
         """The direction as a number: buys add shares, sells remove them."""
         return 1 if self is Side.BUY else -1
 
-@dataclass(frozen=True)
-class CashFlow:
-    """Cash entering (positive) or leaving (negative) the account."""
-
-    date: date
-    amount: Money
 
 @dataclass(frozen=True)
 class Fill:
@@ -112,12 +119,11 @@ class Fill:
 type Entry = CashFlow | Fill
 type Ledger = tuple[Entry, ...]     # ordered oldest first
 
-# The account's history, oldest first: one opening deposit and no positions.
-# Trading records grow by appending here -- a fill is what actually happened,
-# so the next session replays this tuple and cannot drift from reality.
+
 LEDGER: Ledger = (
     CashFlow(date(2026, 8, 20), 50000.0),
 )
+
 
 def cash_delta(entry: Entry) -> Money:
     """The signed cash effect of one entry, independent of the lot book."""
@@ -127,8 +133,8 @@ def cash_delta(entry: Entry) -> Money:
         case Fill(side=side, quantity=quantity, price=price):
             return side.sign * -quantity * price
 
-def sell_lots(lots: tuple[Lot, ...], quantity: Quantity,
-              as_of: date) -> tuple[Lot, ...]:
+
+def sell_lots(lots: tuple[Lot, ...], quantity: Quantity, as_of: date) -> tuple[Lot, ...]:
     """Consume available lots in FIFO order, oldest first."""
     remaining = quantity
     result = []
@@ -137,11 +143,11 @@ def sell_lots(lots: tuple[Lot, ...], quantity: Quantity,
             if remaining and lot.purchase_date < as_of else 0
         remaining -= consumed
         if lot.quantity > consumed:
-            result.append(Lot(lot.purchase_date, lot.quantity - consumed,
-                              lot.price))
+            result.append(Lot(lot.purchase_date, lot.quantity - consumed, lot.price))
     if remaining:
         raise ValueError(f"not enough shares available to sell: {remaining}")
     return tuple(result)
+
 
 def lot_book(fills: tuple[Fill, ...]) -> dict[str, tuple[Lot, ...]]:
     """Fold fills into open lots per symbol: buys open, sells consume FIFO."""
@@ -151,9 +157,11 @@ def lot_book(fills: tuple[Fill, ...]) -> dict[str, tuple[Lot, ...]]:
             book.setdefault(fill.symbol, []).append(
                 Lot(fill.date, fill.quantity, fill.price))
         else:
-            book[fill.symbol] = list(sell_lots(
-                tuple(book.get(fill.symbol, ())), fill.quantity, fill.date))
+            book[fill.symbol] = list(
+                sell_lots(tuple(book.get(fill.symbol, ())), fill.quantity, fill.date)
+            )
     return {symbol: tuple(lots) for symbol, lots in book.items() if lots}
+
 
 def replay(ledger: Ledger, as_of: date, *,
            names: dict[str, str],
@@ -161,9 +169,9 @@ def replay(ledger: Ledger, as_of: date, *,
     """Fold the ledger into the account state at ``as_of``."""
     entries = [entry for entry in ledger if entry.date <= as_of]
     cash = sum(cash_delta(entry) for entry in entries)
-    lots = lot_book(tuple(entry for entry in entries
-                          if isinstance(entry, Fill)))
-    positions = tuple(Position(symbol, names[symbol], open_lots,
-                               prices[symbol])
-                      for symbol, open_lots in lots.items())
+    lots = lot_book(tuple(entry for entry in entries if isinstance(entry, Fill)))
+    positions = tuple(
+        Position(symbol, names[symbol], open_lots, prices[symbol])
+        for symbol, open_lots in lots.items()
+    )
     return Account(cash, positions)
