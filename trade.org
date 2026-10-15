@@ -14,40 +14,12 @@ I'd also need to brush up [[id:2acf272b-757a-447b-b43f-396f00b98744][econ/financ
 
 Tests are written in the same file, alongside the code, so that they both serve as tests and runnable examples. They are often collected from interaction exploration.
 
-Every definition is validated by an example immediately after it, in the same org file. Examples are run by hand in the org session and are deliberately *not* tangled: only definitions reach the =.py= modules, so =python <module>.py= imports them and does nothing else. Examples stay offline: nothing in them reaches the network. The format is specified in full under [[*book.py][book.py]].
+Every definition is validated by an example immediately after it, in the same org file. Examples are run by hand in the org session and are deliberately *not* tangled: only definitions reach the =.py= modules, so =python <module>.py= imports them and does nothing else. Examples stay offline: nothing in them reaches the network.
 
 Because of the way we work (making overall plans at the start, working out the details later), the first solution will never be the best one.
 But that's alright, because refactoring is inherently part of programming.
-** the tangle contract
 
-This file is the source. The =.py= modules are generated from it and are tracked only so they can be read next to the prose; never edit one by hand, because the next tangle overwrites it.
-
-#+begin_example
-:PROPERTIES:
-:header-args:python: :tangle no :mkdirp yes
-:END:
-
-# one module per named file, placed under its own heading
-#+begin_src python :tangle book.py
-#+end_src
-
-# a snippet that exists to be read, not run: no argument, no file
-#+begin_src python
-#+end_src
-
-C-c C-v t          # org-babel-tangle, from this buffer
-#+end_example
-
-Two properties make that work, and the file-level default is the important one:
-
-- =:header-args:python: :tangle no :mkdirp yes= lives in this file's property drawer. =:tangle no= means a snippet tangles *only* when it names a file, so a teaching fragment that happens to be valid Python cannot silently become a module. =:mkdirp yes= creates the directory if a path needs one.
-- =:tangle book.py= on the block is what actually produces output.
-
-Naming: block names are an outline of the code's structure and progression, not a tangle mechanism. No names for now; a tradition can come later.
-
-One trap, verified on Emacs 30.2 rather than assumed:
-
-- The subtree form =:tangle book.py :comments no= is *not* what it looks like: org reads everything after the filename as part of the filename and writes a file literally named =book.py :comments no=. Keep the block header to a plain path and put the rest in a property.
+** general principles
 
 This is a human-in-the-loop project, the building process is also a learning process.
 - proceed in small, verifiable steps, understand each new functionality before moving on.
@@ -56,6 +28,62 @@ This is a human-in-the-loop project, the building process is also a learning pro
 - check file updates before each step, because the human in the loop will also be constantly updating them.
 - build up gradually, don't add too much complexity at once.
 - each agent action should focus on one and only one task
+
+** the section format
+
+Every module section follows this shape. It was worked out on =book= and is the contract for the ones after it.
+
+- *Definitions are ordered by the dependence tree*, and each section states that tree at its head -- =CashFlow + (Side -> Fill) -> Entry -> Ledger=. A block may use only what is already defined above it, so the exported file imports cleanly and reads bottom-up without forward references.
+- *Every definition is validated immediately after it appears.* The example is part of the explanation, not a chore deferred to the end, which is exactly why the work happens in an interactive language. It runs in the module's session, so the variables it binds stay live for the examples below.
+- *Examples are not tangled.* Only the assembly block at the end of the section carries =:tangle <module>.py=, so examples never reach the module and =python <module>.py= does not run them. The tests are done by hand, in the org file.
+- *Docstrings are one line.* Anything longer is prose, in the section, where it can be read as an argument. A one-line summary survives in the tangled file and in =help()=, which is all a docstring is for.
+- *No machinery.* There is no test framework, no =check_= functions, and no runner. An example is a few lines that assert and print what they saw. Because the session carries state forward, a later example reuses an earlier variable instead of rebuilding a thin fixture of its own.
+- *Float exactness is split deliberately.* Exact === for quantities, cash, and marked value, which are integer sums; =math.isclose= for anything divided -- cost per share, weights, returns -- because those are correctly rounded but not exactly representable.
+
+** the tangle contract
+
+This file is the source. The =.py= modules are generated from it and are tracked only so they can be read next to the prose; never edit one by hand, because the next tangle overwrites it.
+
+Each section ends with one assembly block that lists its definitions as =<<noweb>>= references, in export order. That is the mechanism that lets literate order differ from export order:
+
+#+begin_example
+# one block per section, at the end, is the only thing that tangles
+#+begin_src python :tangle book.py :noweb tangle
+<<book-import>>
+<<book-money>>
+...
+#+end_src
+
+# a definition elsewhere in the section, named as <<reference-name>> and not
+# tangled on its own
+#+begin_src python
+...
+#+end_src
+#+end_example
+
+#+begin_example
+:PROPERTIES:
+:header-args:python: :tangle no :mkdirp yes
+:END:
+
+C-c C-v t          # org-babel-tangle, from this buffer
+#+end_example
+
+Two properties make that safe, and the file-level default is the important one:
+
+- =:header-args:python: :tangle no :mkdirp yes= lives in this file's property drawer. =:tangle no= means a snippet tangles *only* when it names a file, so a teaching fragment that happens to be valid Python cannot silently become a module. =:mkdirp yes= creates the directory if a path needs one.
+- =:tangle book.py :noweb tangle= on the assembly block is what actually produces output.
+
+Because noweb resolves *by name*, two blocks sharing a =#+name:= are silently resolved to the first one, and a definition disappears from the module while the tangle still reports success. This bit us once already: an illustration inside a =#+begin_example= block shared the name =book-money= with the real definition, and org happily used the illustration. Example blocks are part of the same namespace, so a fragment meant to be read, not run, must not be named. Two habits keep it honest:
+
+#+begin_example
+grep -o '^#+name: .*' trade.org | sort | uniq -d    # must print nothing
+python <module>.py                                  # must import and run
+#+end_example
+
+One trap, verified on Emacs 30.2 rather than assumed:
+
+- The subtree form =:tangle book.py :comments no= is *not* what it looks like: org reads everything after the filename as part of the filename and writes a file literally named =book.py :comments no=. Keep the block header to a plain path and put the rest in a property.
 
 ** DONE code the MVP
 
@@ -156,7 +184,7 @@ database
 
 since we already have a real trading account, and trading is ongoing as we build the project, we can build up the database along with the vocabulary.
 
-* market.py
+* market
 
 TODO: rewrite from =gather.py=. Reads the snapshot and never touches the network.
 
@@ -262,12 +290,6 @@ other useful concepts, that I still don't know how to integrate:
 :header-args:python: :session book :results output :kernel notes :exports both
 :END:
 
-: removed .py in heading (done)
-: clean up / organize tangles (a single tangle block in "next steps", with all no-web links). sometimes the litprogram order can be different from exported order, more flexible.
-: remove "how" to agent instructions
-: create separate repo local and on github, add as subrepo to notes
-: going slower for later sections
-
 The booking consists of three parts: the static account (holding at any specific moment), the dynamic ledger (the total trading history), and how to replay the ledger to get the account.
 
 This is the state half of the vocabulary: what you hold, and the history that produced it. Risk *policy* is deliberately not here -- lot size and the weight caps belong to =Rules= in =decide.py=, because they are choices about how to trade rather than facts about the account.
@@ -285,16 +307,6 @@ from dataclasses import dataclass
 from datetime import date
 from enum import Enum
 #+end_src
-
-** how this section is written
-
-The format decided here is the one every later module follows: prose carries the reasoning, code carries the logic, and neither carries the other's weight.
-
-- *Definitions are ordered by the dependence tree.* Each block may use only what is already defined above it, so the tangled file imports cleanly and the section reads bottom-up without forward references.
-- *Every definition is validated immediately after it appears.* The example is part of the explanation, not a chore deferred to the end, which is exactly why the work happens in an interactive language. It runs in the =book= session, so the variables it binds stay live for the examples below.
-- *Examples are not tangled.* Only definitions carry =:tangle book.py=, so the examples never reach the module and =python book.py= does not run them. The tests are done by hand, here, in this file.
-- *Docstrings are one line.* Anything longer is prose, in the section, where it can be read as an argument. A one-line summary survives in the tangled file and in =help()=, which is all a docstring is for.
-- *No machinery.* There is no test framework, no =check_= functions, and no runner. An example is a few lines that assert and print what they saw. Because the session carries state forward, a later example can reuse an earlier variable instead of rebuilding a thin fixture of its own.
 
 ** the account
 
@@ -461,14 +473,25 @@ There is no duplicate-symbol check, unlike the old =Portfolio=. Positions come f
 =weight= and =cash_weight= are 0 for an emptied account rather than a division error. Equity *is* cash plus marked value, so zero equity means every weight is zero; dividing anyway would raise where the state itself is perfectly describable.
 
 #+begin_src python
-# TODO extend example to multiple positions with multiple lots
-position = Position("TEST", "Test", (Lot(date(2026, 8, 20), 300, 8.0),), price=10.0)
-account = Account(cash=20000.0, positions=(position,))
+# Two names, three lots, at prices that make the weights easy to read.
+lots_a = (Lot(date(2026, 8, 20), 1000, 10.0),
+          Lot(date(2026, 8, 25), 1000, 12.0))
+position_a = Position("AAA", "A", lots_a, price=11.0)
+position_b = Position("BBB", "B", (Lot(date(2026, 8, 20), 500, 20.0),),
+                      price=18.0)
+account = Account(cash=10000.0, positions=(position_a, position_b))
 
-assert account.value == 3000.0            # the position alone
-assert account.equity == 23000.0          # plus cash
-assert math.isclose(account.weight("TEST"), 3000.0 / 23000.0)
-assert math.isclose(account.cash_weight, 20000.0 / 23000.0)
+assert position_a.quantity == 2000
+assert position_a.value == 22000.0                # 2000 * 11.0
+assert position_b.value == 9000.0                 # 500 * 18.0
+assert account.value == 31000.0                   # the positions alone
+assert account.equity == 41000.0                  # plus cash
+
+# A weight is the position against the whole account, and the two need not sum
+# to one: cash is the remainder.
+assert math.isclose(account.weight("AAA"), 22000.0 / 41000.0)
+assert math.isclose(account.weight("BBB"), 9000.0 / 41000.0)
+assert math.isclose(account.cash_weight, 10000.0 / 41000.0)
 
 # An emptied account is describable, not a division error.
 empty = Account(cash=0.0, positions=())
@@ -484,11 +507,14 @@ else:
     assert False, "expected KeyError for an unknown symbol"
 
 print(f"account: cash {account.cash:.2f}, value {account.value:.2f}, "
-        f"total equity {account.equity:.2f}, cash weight {account.cash_weight:.1%}")
+      f"equity {account.equity:.2f} \n"
+      f"AAA {account.weight('AAA'):.1%}, BBB {account.weight('BBB'):.1%}, "
+      f"cash {account.cash_weight:.1%}")
 #+end_src
 
 #+RESULTS:
-: account: cash 20000.00, value 3000.00, total equity 23000.00, cash weight 87.0%
+: account: cash 10000.00, value 31000.00, equity 41000.00
+: AAA 53.7%, BBB 22.0%, cash 24.4%
 
 ** the ledger
 
@@ -511,7 +537,7 @@ class CashFlow:
 
 #+RESULTS: book-cash-flow
 
-A deposit and a withdrawal are one event with opposite signs, so a single entry covers both -- and, later, dividends and fees.
+A deposit and a withdrawal are the same event with opposite signs, so one entry type covers both -- and, later, dividends and fees. They need not share a date: the example below deposits and withdraws a day apart, and nothing in the type cares.
 
 #+begin_src python
 deposit = CashFlow(date(2026, 8, 20), 50000.0)
@@ -917,7 +943,7 @@ Instead of tangling blocks one by one, all tangle blocks go here, in proper orde
 8. TODO: Trade, a logical round trip or lifecycle grouping of orders and fills.
 9. reconsider float vs integer cents when the ledger must reconcile to the fen.
 
-* decide.py
+* decide
 
 TODO: rewrite from =infer.py= and =rebalance.py=. Takes =Rules= explicitly; returns signals and orders, never touches the account's policy fields.
 
@@ -1007,7 +1033,7 @@ Still open in the decision layer:
 
 Question: should we allow speculative orders at all, given that =rebalance= currently prices everything at one mark?
 
-* report.py
+* report
 
 TODO: rewrite from =evaluate.py= and =render.py=. The human interface: the risk picture, then the ticket.
 
