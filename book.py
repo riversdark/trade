@@ -3,9 +3,9 @@ from dataclasses import dataclass
 from datetime import date
 from enum import Enum
 
+from market import Money, Quantity
 
-type Money = float           # cash, prices, and any amount of money
-type Quantity = int          # a count of shares
+
 
 
 @dataclass(frozen=True)
