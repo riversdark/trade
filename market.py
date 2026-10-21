@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
 
+from watches import WATCHLIST
+
 type Money = float           # cash, prices, and any amount of money
 type Quantity = int          # a count of shares
 
@@ -49,16 +51,6 @@ def mark(market: Market, symbol: str) -> Money:
 # use hardlink for the moment
 STORE = Path.home() / "git" / "notes" / "projects" / "trade" / "bars"
 SERIES = ("raw", "qfq")
-
-# The names this account watches: its holdings plus the candidates under
-# consideration. `gather` can only be as wide as what `source.py` fetches, so
-# widening it is a one-line change here plus one refresh.
-WATCHLIST: tuple[str, ...] = (
-    # holdings
-    "000528", "601226", "002389", "002272", "000519", "002414", "601212",
-    # candidates
-    "600036", "601318", "000001", "600519",
-)
 
 # How many bars downstream gets. The modelling layer's momentum is "the return
 # over the window", so the window *is* the lookback: 60 trading days is roughly

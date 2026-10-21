@@ -22,10 +22,11 @@ But that's alright, because refactoring is inherently part of programming.
 ** general principles
 
 This is a human-in-the-loop project, the building process is also a learning process.
-- proceed in small, verifiable steps, understand each new functionality before moving on.
+- check file updates before each step, because the human in the loop will also be constantly updating them.
+- aim for incremental edits rather than wholesale rewrites, easier for the human to keep track of changes.
+- proceed in small, verifiable steps, let the human understand each new functionality before moving on.
 - aim for concise code and clear logic, don't write overly defensive code, let edge cases fail loudly.
 - note new packages/functionalities, noteworthy programming patterns, etc, so I can continuously improve my skills.
-- check file updates before each step, because the human in the loop will also be constantly updating them.
 - build up gradually, don't add too much complexity at once.
 - each agent action should focus on one and only one task
 
@@ -84,17 +85,6 @@ One trap, verified on Emacs 30.2 rather than assumed:
 
 - The subtree form =:tangle book.py :comments no= is *not* what it looks like: org reads everything after the filename as part of the filename and writes a file literally named =book.py :comments no=. Keep the block header to a plain path and put the rest in a property.
 
-** DONE code the MVP
-
-I want to write the first MVP (minimum viable program) for this project, following the wishful plan. Each step of the plan is now its own module, and =trade.py= is only the procession through them. This file is the orchestration and understanding layer over that code.
-
-1. discuss before implementation. each project should be a learning process, and the learning is as important as the final product. high-light intermediate and advanced python skills along the way. (can be code comments)
-2. each step can implement merely the simplest logic possible, the important thing is to have a end-to-end coherent system.
-3. follow a Norvig coding style. no over-complication, no unit tests, no defensive coding (let edge cases and logic errors fail loudly), just functional, clearly organized code following best Norvig practices.
-4. clarity over efficiency.
-5. the program should start with a cash allowance and an existing portfolio (possibly empty), and output the next batch of orders to execute. this is not an automatic trading system, the actual execution is out of scope and will be done manually.
-6. I'll later inspect the logic and document it in the org file.
-
 * background
 
 this is a Bayesian guided, Agentic AI aided trading system for China A shares.
@@ -126,91 +116,437 @@ Nothing is imported yet beyond the standard library. Money is a plain =float= (s
 
 * wishful plan
 
-this system is used to help making buy/sell decisions, but the actual executions are done manually, outside the system. The whole workflow is one session, and every step of it is one function in one module:
-
-| step    | call                                           | module | status  |
-|---------+------------------------------------------------+--------+---------|
-| gather  | =gather(as_of)=                                  | market | DONE    |
-| replay  | =replay(LEDGER, as_of, names, prices)=           | book   | DONE    |
-| signal  | =signal(market)=                                 | decide | planned |
-| orders  | =orders(account, beliefs, market, as_of, rules)= | decide | planned |
-| metrics | =metrics(account, rules)=                        | report | planned |
-| ticket  | =ticket(orders)=                                 | report | planned |
-| session | =trade(as_of)=                                   | trade  | planned |
-| fetch   | =refresh(symbols, series)=                       | source | DONE    |
-
-=decide= and =report= are not written yet, so their calls above are the intended signatures, not the implementation. What is already fixed is the shape of the data they exchange: a =Market= and an =Account= go in; beliefs (one =Money= per name, keyed by symbol) and a list of =Order= come out.
+this system is used to help making buy/sell decisions, but the actual executions are done manually, outside the system.
+The whole workflow is one session, and every step of it is one function in one module:
 
 #+name: wish-trade
-#+begin_src python
+#+begin_src python :eval never
 def trade(as_of):
     "Handles one trading session."
 
-    market  = gather(as_of)                             # snapshot as of a date
-    account = replay(LEDGER, as_of,                     # history -> state
-                     names=names, prices=prices)
-    beliefs = signal(market)                            # the model's view
-    batch   = orders(account, beliefs, market, as_of, rules)  # what to place
-    risk    = metrics(account, rules)                   # equity, weights, warnings
+    #1. do market research, determine the watchlist of stocks we should consider.
+    watches = research()
 
-    return account, risk, batch                         # ticket(batch) is the caller's step
+    #2. gather market information for the watch list, OHLCV, macros, etc.
+    market  = gather(watches, as_of)
+
+    #3. replay trading ledger to get current account info.
+    account = replay(market, LEDGER, as_of)
+
+    #4. establish investment beliefs using stats modeling.
+    beliefs = signal(market)
+
+    #5. determine the orders
+    orders  = decide(account, beliefs, rules, as_of)
+
+    #6. evaluation
+    evals   = metrics(account, rules)
+
+    return account, orders, evals
 #+end_src
 
-=trade= takes an =as_of= argument so we can easily use the same logic in backtesting, and it threads that one date through every step that has a time dimension: =gather= sees no bar after it, =replay= sees no fill after it, and T+1 is computed against it. It returns the account it reasoned about as well as the orders, so a caller can reconcile it without gathering twice.
+=trade= takes an =as_of= argument so we can easily use the same logic in backtesting, and it threads that one date through every step that has a time dimension: =gather= sees no bar after it, =replay= sees no fill after it, and T+1 is computed against it.
+It returns the account it reasoned about as well as the orders, so a caller can reconcile it without gathering twice.
 
-=ticket= is deliberately not inside =trade=: =trade= stays a pure state-in/orders-out function, and the caller does the printing. =metrics= *is* inside it, because the risk picture is part of what a session decides on, not just decoration for the human.
+=ticket(orders)= is deliberately not inside =trade=: =trade= stays a pure state-in/orders-out function, and the caller does the printing.
+=metrics= *is* inside it, because the risk picture is part of what a session decides on, not just decoration for the human.
+* watches
+:PROPERTIES:
+:header-args:python: :session market :results output :kernel notes :exports both
+:END:
 
-One consequence of splitting the old =rebalance= into =signal= and =orders=: the decision layer computes beliefs from the market and then sizes orders against marks and =Rules=. So =decide= does see the market -- it must, to price a lot -- but what it *decides on* is beliefs plus =Rules=, and the account it receives carries no policy of its own.
+there are thousands of stocks in the market, we must determine which should come under consideration.
 
-** vocabulary, built from use
+For the moment, this is a hand-picked list of the account's holdings plus the candidate names under consideration. =gather= reads it and =source.refresh= uses it by default, so adding a name means refreshing its stored data too.
 
-The vocabulary has a hierarchical structure, but it is not necessary to have it all ready at start: we add words (and improve the implementation) as the project progresses. It is also not my intention to build a full-fledged investment banking system; my system can be simpler than professional traders, and fine trading control can be deferred. The important thing is to have the complete workflow up and running.
+#+name: watches-list
+#+begin_src python :results none
+WATCHLIST: tuple[str, ...] = (
+    # holdings
+    "000528", "601226", "002389", "002272", "000519", "002414", "601212",
+    # candidates
+    "600036", "601318", "000001", "600519",
+)
+#+end_src
 
-The order is deliberate: before ironing out a vocabulary, first think about the operations that will use it (test and usage driven implementation). So each step below says both what the code has now, and what it still wants.
+#+begin_src python
+assert len(WATCHLIST) == 11 and len(set(WATCHLIST)) == 11
+print(f"watchlist: {len(WATCHLIST)} symbols:\n {WATCHLIST}")
+#+end_src
 
-** implemented so far
+#+RESULTS:
+: watchlist: 11 symbols:
+:  ('000528', '601226', '002389', '002272', '000519', '002414', '601212', '600036', '601318', '000001', '600519')
 
-The code is being rebuilt as literate source, so this section is a migration in progress: the left column is what exists, the right is where it is going. The old modules stay in git until their replacement is verified against the same numbers.
-
-| old module(s)            | new module   | role        | key vocabulary                                  |
-|--------------------------+--------------+-------------+-------------------------------------------------|
-| =portfolio.py=, =ledger.py= | =book.py= DONE  | state       | =Side=, =Lot=, =Position=, =Account=, =replay=      |
-| =gather.py=              | =market.py= DONE | 1 gather    | =Money=, =Bar=, =Bars=, =Instrument=, =Market=, =read=, =gather=, =mark= |
-| =infer.py=, =rebalance.py=  | =decide.py=  | 2 decide    | =Rules=, =signal=, =orders=                         |
-| =evaluate.py=, =render.py=  | =report.py=  | 3 report    | =metrics=, =issues=, =ticket=                       |
-| =trade.py=               | =trade.py=   | session     | =session=                                       |
-| =source.py=              | =source.py= DONE | fetch       | =get=, =market_code=, =parse_bars=, =parse_names=, =fetch_bars=, =write_bars=, =refresh= |
-
-Three changes are doing most of the simplification, and each one removes a name rather than adding one:
-
-- =Portfolio= was account state, risk policy, and derived arithmetic in one class. =Account= keeps only =cash= and =positions=; the policy moves to a =Rules= value that is passed explicitly to the two functions that care, so the decision layer no longer receives the account as a vehicle for the caps.
-- =Belief= and =Metrics= were dataclasses whose only job was to mark a boundary. The boundary is worth keeping; the class is not. A =Belief= becomes an entry in =dict[str, Money]= and =Metrics= becomes the plain values =report= returns.
-- =Retrieve= and =evaluate= were steps without decisions -- 90 and 67 lines of glue around =replay= and three divisions. Replaying the ledger is =book='s job and producing the risk picture is =report='s.
-
-The procession keeps the five steps of the original wishful plan, renamed to the functions that now implement them, with =metrics= moved beside the path instead of into it:
-
-#+begin_example
-gather -> replay -> signal -> orders -> ticket
-             \-> metrics
-#+end_example
-
-=metrics= reads the account and the rules, so it sits beside the decision path rather than in it; =ticket= reads the batch. Nothing in the session path imports =source=, so no session can reach the network even by accident.
-
-database
-
-since we already have a real trading account, and trading is ongoing as we build the project, we can build up the database along with the vocabulary.
+#+begin_src python :tangle watches.py :noweb tangle :eval never
+<<watches-list>>
+#+end_src
 
 * market
 :PROPERTIES:
 :header-args:python: :session market :results output :kernel notes :exports both
 :END:
 
-get data from online sources, and read them into proper formats.
+1. get the necessary information for all the stocks in the watchlist.
+2. those info should be stored on disk, in a database, and retrieved when needed.
+3. lazy fetch? check existing, only do it when database is out of date for given instrument.
+4. then read them into proper formats for later use.
+** source
+:PROPERTIES:
+:header-args:python: :session source :results output :kernel notes :exports both
+:END:
 
-1. there are thousands of stocks in the market, we must determine which should come under consideration.
-2. for those under consideration, why information should we get?
-3. those info should be stored on disk, in a database, and retrieved when needed.
+=market= reads the snapshot; this is the module that fills it. It sits deliberately *off* the session path -- nothing that reasons about an order imports it -- because a session must never depend on the network.
 
+Dependence tree: =market (Bar, Bars, STORE, load_names) + watches (WATCHLIST) -> parse -> fetch -> write -> refresh=. This is the only module in the project that opens a socket.
+
+*** imports
+
+#+name: source-import
+#+begin_src python :results none
+import csv
+import json
+import sys
+import time
+import urllib.error
+import urllib.request
+from datetime import date
+from pathlib import Path
+
+from market import STORE, Bar, Bars, load_names
+from watches import WATCHLIST
+#+end_src
+
+The data types and store path come from =market=; the default universe comes from =watches=. =source= produces the bars that =market= reads, so =market= must not know that =source= exists. Importing =source= from the session path would put the network one careless import away from a decision.
+
+*** the endpoints
+
+Two Tencent endpoints, both verified working from this machine on 2026-09-29, both reached with the standard library (=urllib= + =json=, no pandas):
+
+| endpoint                    | shape                                                         |
+|-----------------------------+---------------------------------------------------------------|
+| =web.ifzq.gtimg.cn= fqkline | one request per symbol -> up to 640 daily OHLCV bars           |
+| =qt.gtimg.cn/q==            | one request -> many symbols' Chinese names and latest quotes   |
+
+#+name: source-constants
+#+begin_src python
+KLINE = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+QUOTE = "https://qt.gtimg.cn/q="
+
+HEADERS = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) notes-trade/0.1"}
+
+DEPTH = 640     # The endpoint's own cap, about two and a half years
+DELAY = 0.35    # Seconds between symbol requests
+BATCH = 50      # symbols per quote request
+RETRIES = 3
+
+# The store's series names are about intent; the API's `adjust` values are
+# about the wire. Keep the translation in one place.
+ADJUST = {"raw": "", "qfq": "qfq"}
+#+end_src
+
+The names in this block are all *decisions*, not numbers that fell out of the API: how deep a history to ask for, how fast to pace requests, how many attempts before giving up. Keeping them together at the top is what makes the politeness reviewable in one glance.
+
+*** why fetching is a separate step
+
+akshare's headline =stock_zh_a_hist= reads eastmoney, and eastmoney **closes the connection on every attempt from this machine** -- =RemoteDisconnected=, with or without a browser User-Agent and Referer. It is not a rate limit to pace around; that route is simply shut. Batch-fetching harder would only produce more of the same.
+
+The fix is not a cleverer client but a different shape: fetch once, store, and read the store. A session then costs zero requests, so the rate limit stops being a constraint on how the system works. It also buys three things that matter more than the convenience: the tests are deterministic and offline, a pinned =as_of= cannot see the future, and a failed fetch is a visible missing file rather than a silently short price series.
+
+*** why not akshare
+
+akshare is not used, for two measured reasons rather than taste: its eastmoney path is dead here, and its Tencent wrapper loops one request per *year* while importing pandas and tqdm to hand back a DataFrame. The endpoint underneath returns 640 daily bars in a single request. The whole 11-name, two-series snapshot is 23 requests and about ten seconds.
+
+*** one request, retried
+
+#+name: source-get
+#+begin_src python
+def get(url: str, *, encoding: str = "utf-8") -> str:
+    """One GET, retried, so a dropped connection is not a data gap."""
+    for attempt in range(RETRIES):
+        try:
+            with urllib.request.urlopen(
+                    urllib.request.Request(url, headers=HEADERS),
+                    timeout=20) as response:
+                return response.read().decode(encoding, errors="replace")
+        except (urllib.error.URLError, OSError):
+            if attempt == RETRIES - 1:
+                raise
+            time.sleep(DELAY * 2 ** attempt)
+    raise AssertionError("unreachable")
+#+end_src
+
+=Politeness= lives here rather than in a comment: =DELAY= paces symbol requests, and the retry sleeps =DELAY * 2 ** attempt= between attempts, so a dropped connection costs a retry instead of a hole in the snapshot and a full refresh stays a background chore rather than something that looks like an attack.
+
+=RemoteDisconnected= is a subclass of =OSError=, so the retry catches the same failures that make the eastmoney route hopeless. The difference is that this endpoint answers on the second try.
+
+#+begin_src python
+from urllib.parse import urlparse
+parsed = urlparse(KLINE)
+assert parsed.scheme == "https" and parsed.hostname == "web.ifzq.gtimg.cn"
+assert RETRIES > 1 and DELAY > 0
+print(f"politeness: {RETRIES} tries, {DELAY}s pacing, {BATCH} names/request")
+#+end_src
+
+*** from symbol to market code
+
+#+name: source-market-code
+#+begin_src python
+def market_code(symbol: str) -> str:
+    """A-share symbol -> Tencent's market-prefixed code."""
+    if symbol.startswith(("6", "9")):
+        return f"sh{symbol}"
+    if symbol.startswith(("4", "8")):
+        return f"bj{symbol}"
+    return f"sz{symbol}"
+#+end_src
+
+The prefix is a property of the code, so it is computed rather than looked up: 6xxxxx and 9xxxxx are Shanghai, 4xxxxx and 8xxxxx Beijing, everything else Shenzhen. A table would be one more thing to keep in sync with the exchange.
+
+#+begin_src python
+assert market_code("000528") == "sz000528"
+assert market_code("600519") == "sh600519"
+assert market_code("830799") == "bj830799"
+print("codes: 000528 -> sz, 600519 -> sh, 830799 -> bj")
+#+end_src
+
+*** a wire row is not a bar
+
+#+name: source-parse-bars
+#+begin_src python
+def parse_bars(payload: str, symbol: str, adjust: str) -> Bars:
+    """Decode one fqkline response into bars, oldest first."""
+    code = market_code(symbol)
+    rows = json.loads(payload)["data"][code][f"{adjust}day"]
+    return tuple(
+        Bar(date=date.fromisoformat(row[0]),
+            open=float(row[1]),
+            high=float(row[3]),
+            low=float(row[4]),
+            close=float(row[2]),
+            volume=int(float(row[5])))
+        for row in rows
+    )
+#+end_src
+
+The row is =[date, open, close, high, low, volume]= -- close *before* high and low. That is the one thing here worth getting wrong quietly, so the mapping is spelled out positionally rather than left to a column list a reader has to hold in their head.
+
+Two smaller pieces of the same care: prices go straight from the wire string to =float=, and volume is =int(float(...))= because the endpoint writes it as =222233.000=. Volume is in 手, the unit =book='s lot size already speaks.
+
+#+begin_src python
+captured = json.dumps({"data": {"sz000528": {"qfqday": [
+    ["2026-09-29", "7.420", "7.360", "7.460", "7.350", "222233.000"],
+]}}})   # the wire order is O, C, H, L
+bar, = parse_bars(captured, "000528", "qfq")
+assert bar.date == date(2026, 9, 29)
+assert bar.open == 7.420
+assert bar.close == 7.360        # row[2], NOT row[3]
+assert bar.high == 7.460         # row[3]
+assert bar.low == 7.350          # row[4]
+assert bar.volume == 222233
+assert bar.low <= bar.close <= bar.high
+print(f"parsed: {bar.date} O{bar.open} C{bar.close} H{bar.high} "
+      f"L{bar.low} V{bar.volume}")
+#+end_src
+
+*** one symbol, one request
+
+#+name: source-fetch-bars
+#+begin_src python
+def fetch_bars(symbol: str, adjust: str) -> Bars:
+    """One symbol's full stored window: a single request."""
+    code = market_code(symbol)
+    span = f"1900-01-01,{date.today().isoformat()}"
+    payload = get(f"{KLINE}?param={code},day,{span},{DEPTH},{adjust}")
+    return parse_bars(payload, symbol, adjust)
+#+end_src
+
+=DEPTH= is the endpoint's own cap, so the span asks for everything it will give and the cap does the limiting. This is also the only place =ADJUST= is read, which keeps the raw/qfq translation in one line rather than spread across call sites.
+
+*** names
+
+=names.csv= is one shared file, so a subset refresh is exactly where it could quietly forget the rest of the watchlist. Three functions, each doing one of those steps:
+
+#+name: source-parse-names
+#+begin_src python
+def parse_names(text: str) -> dict[str, str]:
+    """Decode a `qt` response into symbol -> name."""
+    names = {}
+    for line in text.split(";"):
+        fields = line.split("~")
+        # A code with no data answers with a short line such as
+        # `v_pv_none_match="1"`, which must not become a name.
+        if len(fields) > 3 and fields[2].isdigit():
+            names[fields[2]] = "".join(fields[1].split())
+    return names
+#+end_src
+
+Each line looks like =v_sz000528="51~柳    工~000528~7.36~...=, where the name is padded with spaces that belong to the protocol's fixed-width layout, not to the name. Splitting on whitespace and rejoining is what turns =柳    工= back into =柳工=.
+
+#+begin_src python
+assert parse_names('v_sz000528="51~柳   工~000528~7.36~7.43";') == \
+    {"000528": "柳工"}
+assert parse_names('v_pv_none_match="1";') == {}
+print("names: padded 柳    工 decodes to 柳工")
+#+end_src
+
+#+name: source-fetch-names
+#+begin_src python
+def fetch_names(symbols: tuple[str, ...]) -> dict[str, str]:
+    """Every name in one request per BATCH symbols."""
+    codes = [market_code(symbol) for symbol in symbols]
+    names: dict[str, str] = {}
+    for start in range(0, len(codes), BATCH):
+        chunk = codes[start:start + BATCH]
+        # GBK, not UTF-8: the endpoint is an old one and answers in it.
+        names |= parse_names(get(QUOTE + ",".join(chunk), encoding="gbk"))
+    return names
+#+end_src
+
+#+name: source-merge-names
+#+begin_src python
+def merge_names(stored: dict[str, str],
+                fetched: dict[str, str]) -> dict[str, str]:
+    """Fetched names win; names of symbols not asked about survive."""
+    return stored | fetched
+#+end_src
+
+#+begin_src python
+assert merge_names({"000528": "柳工"}, {"600519": "贵州茅台"}) == \
+    {"000528": "柳工", "600519": "贵州茅台"}
+assert merge_names({"600519": "stale"}, {"600519": "fresh"}) == \
+    {"600519": "fresh"}
+print("merge: a subset refresh keeps the symbols it did not ask about")
+#+end_src
+
+*** writing the store
+
+#+name: source-write-bars
+#+begin_src python
+def write_bars(path: Path, bars: Bars) -> None:
+    """Overwrite the file with the whole history, oldest first."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(("date", "open", "high", "low", "close", "volume"))
+        writer.writerows(
+            (bar.date.isoformat(), bar.open, bar.high, bar.low, bar.close,
+             bar.volume)
+            for bar in bars)
+#+end_src
+
+#+name: source-write-names
+#+begin_src python
+def write_names(path: Path, names: dict[str, str]) -> None:
+    """Write the whole symbol -> name table, sorted."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(("symbol", "name"))
+        writer.writerows(sorted(names.items()))
+#+end_src
+
+Overwrite rather than append is not laziness: a dividend rewrites the entire qfq series, so appending would silently mix adjustment vintages in one file. The column order written here is the one =market.read= expects, and it is matched by *name* on the way back in, so the two cannot drift apart silently.
+
+#+begin_src python
+from tempfile import TemporaryDirectory
+sample = (Bar(date(2026, 9, 28), 7.40, 7.50, 7.35, 7.46, 1000),
+          Bar(date(2026, 9, 29), 7.42, 7.46, 7.35, 7.36, 222233))
+with TemporaryDirectory() as tmp:
+    bars_path = Path(tmp) / "raw" / "TEST.csv"
+    write_bars(bars_path, sample)
+    assert bars_path.read_text().splitlines()[0] == \
+        "date,open,high,low,close,volume"
+    assert len(bars_path.read_text().splitlines()) == 3
+    names_path = Path(tmp) / "names.csv"
+    write_names(names_path, {"000528": "柳工", "600519": "贵州茅台"})
+    assert names_path.read_text().splitlines()[1].startswith("000528")
+print("write: 2 bars and 2 names round-tripped through a temp directory")
+#+end_src
+
+*** the refresh driver
+
+#+name: source-refresh
+#+begin_src python
+def refresh(symbols: tuple[str, ...] = WATCHLIST,
+            series: tuple[str, ...] = ("raw", "qfq")) -> None:
+    """Fetch and store every symbol and series, then the names."""
+    for name in series:
+        for symbol in symbols:
+            bars = fetch_bars(symbol, ADJUST[name])
+            write_bars(STORE / name / f"{symbol}.csv", bars)
+            print(f"{name:>3} {symbol} {len(bars):>4} bars "
+                  f"{bars[0].date} .. {bars[-1].date}")
+            time.sleep(DELAY)
+
+    # Bars are one file per symbol, so refreshing a subset is partial by
+    # construction. `names.csv` is a single shared file, so it is the one place
+    # a subset refresh could quietly forget the symbols it was not asked
+    # about -- and `gather` would then raise a KeyError for every one of them.
+    path = STORE / "names.csv"
+    names = load_names() if path.exists() else {}
+    names = merge_names(names, fetch_names(symbols))
+    write_names(path, names)
+    print(f"names {len(names)} symbols stored")
+#+end_src
+
+This is the only function that both fetches and writes, and the only one you run by hand. Both series are refreshed in full rather than in place, and the names merge rather than replace, which is what makes =refresh 600519= safe to run on its own.
+
+*** the command line
+
+#+name: source-main
+#+begin_src python
+if __name__ == "__main__":
+
+    match sys.argv[1:]:
+        case ["refresh", *symbols]:
+            refresh(tuple(symbols) or WATCHLIST)
+        case _:
+            raise SystemExit("usage: python source.py refresh [symbol ...]")
+#+end_src
+
+There is no default command on purpose: a bare =python source.py= must not fetch, because the safe default for something that talks to the network is to do nothing until asked.
+
+#+begin_example
+python source.py refresh                 # refresh the whole watchlist
+python source.py refresh 000528 600519   # refresh just these
+#+end_example
+
+*** assembling the module
+
+#+begin_src python :tangle source.py :noweb tangle
+<<source-import>>
+
+<<source-constants>>
+
+<<source-get>>
+
+<<source-market-code>>
+
+<<source-parse-bars>>
+
+<<source-fetch-bars>>
+
+<<source-parse-names>>
+
+<<source-fetch-names>>
+
+<<source-merge-names>>
+
+<<source-write-bars>>
+
+<<source-write-names>>
+
+<<source-refresh>>
+
+<<source-main>>
+#+end_src
+
+*** open questions
+
+- There is no recorded fetch date anywhere, so "when was this snapshot taken" is answerable only from the file's mtime. A =meta= row, or a =fetched.csv=, would make provenance explicit.
+- The wire-format check above is an org example now, so =python source.py= no longer runs it. That moves the column-order guard from "always" to "when you evaluate the block" -- worth revisiting if a bad refresh ever slips through.
+- =refresh= rewrites the whole watchlist one symbol at a time; a single failed symbol aborts the run partway. That is loud rather than silent, but it leaves the store half-refreshed, and the qfq/raw vintage problem that motivates overwriting makes a half-refreshed store worse than an old one.
 ** gather: market information
 
 Dependence tree: =Money -> Bar -> Instrument -> (Bars, Market) -> mark=, with =gather= producing the =Market= that =mark= reads.
@@ -224,6 +560,8 @@ import math
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
+
+from watches import WATCHLIST
 #+end_src
 
 *** the scalar vocabulary
@@ -425,16 +763,6 @@ print(f"mark: 000528 {mark(market, '000528')}, "
 STORE = Path.home() / "git" / "notes" / "projects" / "trade" / "bars"
 SERIES = ("raw", "qfq")
 
-# The names this account watches: its holdings plus the candidates under
-# consideration. `gather` can only be as wide as what `source.py` fetches, so
-# widening it is a one-line change here plus one refresh.
-WATCHLIST: tuple[str, ...] = (
-    # holdings
-    "000528", "601226", "002389", "002272", "000519", "002414", "601212",
-    # candidates
-    "600036", "601318", "000001", "600519",
-)
-
 # How many bars downstream gets. The modelling layer's momentum is "the return
 # over the window", so the window *is* the lookback: 60 trading days is roughly
 # a quarter, and an unbounded window would have turned that into a 2.5-year
@@ -449,12 +777,11 @@ WINDOW = 60
 #+begin_src python
 assert STORE.is_dir()
 assert set(SERIES) == {"raw", "qfq"}
-assert len(WATCHLIST) == 11 and len(set(WATCHLIST)) == 11
-print(f"store: {STORE.name}/ with {SERIES}, {len(WATCHLIST)} symbols watched")
+print(f"store: {STORE.name}/ with {SERIES}")
 #+end_src
 
 #+RESULTS:
-: store: bars/ with ('raw', 'qfq'), 11 symbols watched
+: store: bars/ with ('raw', 'qfq')
 
 *** reading a series
 
@@ -649,365 +976,12 @@ other useful concepts, that I still don't know how to integrate:
 - DataSource, DataSnapshot, and provenance (=source= and =bars/= are the thinnest version: one source, one directory, no recorded fetch date)
 - corporate actions, suspensions, delistings, and adjustment policies
 - data-quality checks and protection against look-ahead/survivorship biases
-* source
-:PROPERTIES:
-:header-args:python: :session source :results output :kernel notes :exports both
-:END:
-
-=market= reads the snapshot; this is the module that fills it. It sits deliberately *off* the session path -- nothing that reasons about an order imports it -- because a session must never depend on the network.
-
-Dependence tree: =market (Bar, Bars, STORE, WATCHLIST, load_names) -> parse -> fetch -> write -> refresh=. This is the only module in the project that opens a socket.
-
-** imports
-
-#+name: source-import
-#+begin_src python :results none
-import csv
-import json
-import sys
-import time
-import urllib.error
-import urllib.request
-from datetime import date
-from pathlib import Path
-
-from market import STORE, WATCHLIST, Bar, Bars, load_names
-#+end_src
-
-The only dependency of ours is =market=, and the arrow points this way on purpose: source *produces* the bars that market reads, so market must not know that source exists. Importing source from the session path would put the network one careless import away from a decision.
-
-** the endpoints
-
-Two Tencent endpoints, both verified working from this machine on 2026-09-29, both reached with the standard library (=urllib= + =json=, no pandas):
-
-| endpoint                    | shape                                                         |
-|-----------------------------+---------------------------------------------------------------|
-| =web.ifzq.gtimg.cn= fqkline | one request per symbol -> up to 640 daily OHLCV bars           |
-| =qt.gtimg.cn/q==            | one request -> many symbols' Chinese names and latest quotes   |
-
-#+name: source-constants
-#+begin_src python
-KLINE = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
-QUOTE = "https://qt.gtimg.cn/q="
-
-HEADERS = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) notes-trade/0.1"}
-
-DEPTH = 640     # The endpoint's own cap, about two and a half years
-DELAY = 0.35    # Seconds between symbol requests
-BATCH = 50      # symbols per quote request
-RETRIES = 3
-
-# The store's series names are about intent; the API's `adjust` values are
-# about the wire. Keep the translation in one place.
-ADJUST = {"raw": "", "qfq": "qfq"}
-#+end_src
-
-The names in this block are all *decisions*, not numbers that fell out of the API: how deep a history to ask for, how fast to pace requests, how many attempts before giving up. Keeping them together at the top is what makes the politeness reviewable in one glance.
-
-** why fetching is a separate step
-
-akshare's headline =stock_zh_a_hist= reads eastmoney, and eastmoney **closes the connection on every attempt from this machine** -- =RemoteDisconnected=, with or without a browser User-Agent and Referer. It is not a rate limit to pace around; that route is simply shut. Batch-fetching harder would only produce more of the same.
-
-The fix is not a cleverer client but a different shape: fetch once, store, and read the store. A session then costs zero requests, so the rate limit stops being a constraint on how the system works. It also buys three things that matter more than the convenience: the tests are deterministic and offline, a pinned =as_of= cannot see the future, and a failed fetch is a visible missing file rather than a silently short price series.
-
-** why not akshare
-
-akshare is not used, for two measured reasons rather than taste: its eastmoney path is dead here, and its Tencent wrapper loops one request per *year* while importing pandas and tqdm to hand back a DataFrame. The endpoint underneath returns 640 daily bars in a single request. The whole 11-name, two-series snapshot is 23 requests and about ten seconds.
-
-** one request, retried
-
-#+name: source-get
-#+begin_src python
-def get(url: str, *, encoding: str = "utf-8") -> str:
-    """One GET, retried, so a dropped connection is not a data gap."""
-    for attempt in range(RETRIES):
-        try:
-            with urllib.request.urlopen(
-                    urllib.request.Request(url, headers=HEADERS),
-                    timeout=20) as response:
-                return response.read().decode(encoding, errors="replace")
-        except (urllib.error.URLError, OSError):
-            if attempt == RETRIES - 1:
-                raise
-            time.sleep(DELAY * 2 ** attempt)
-    raise AssertionError("unreachable")
-#+end_src
-
-=Politeness= lives here rather than in a comment: =DELAY= paces symbol requests, and the retry sleeps =DELAY * 2 ** attempt= between attempts, so a dropped connection costs a retry instead of a hole in the snapshot and a full refresh stays a background chore rather than something that looks like an attack.
-
-=RemoteDisconnected= is a subclass of =OSError=, so the retry catches the same failures that make the eastmoney route hopeless. The difference is that this endpoint answers on the second try.
-
-#+begin_src python
-from urllib.parse import urlparse
-parsed = urlparse(KLINE)
-assert parsed.scheme == "https" and parsed.hostname == "web.ifzq.gtimg.cn"
-assert RETRIES > 1 and DELAY > 0
-print(f"politeness: {RETRIES} tries, {DELAY}s pacing, {BATCH} names/request")
-#+end_src
-
-** from symbol to market code
-
-#+name: source-market-code
-#+begin_src python
-def market_code(symbol: str) -> str:
-    """A-share symbol -> Tencent's market-prefixed code."""
-    if symbol.startswith(("6", "9")):
-        return f"sh{symbol}"
-    if symbol.startswith(("4", "8")):
-        return f"bj{symbol}"
-    return f"sz{symbol}"
-#+end_src
-
-The prefix is a property of the code, so it is computed rather than looked up: 6xxxxx and 9xxxxx are Shanghai, 4xxxxx and 8xxxxx Beijing, everything else Shenzhen. A table would be one more thing to keep in sync with the exchange.
-
-#+begin_src python
-assert market_code("000528") == "sz000528"
-assert market_code("600519") == "sh600519"
-assert market_code("830799") == "bj830799"
-print("codes: 000528 -> sz, 600519 -> sh, 830799 -> bj")
-#+end_src
-
-** a wire row is not a bar
-
-#+name: source-parse-bars
-#+begin_src python
-def parse_bars(payload: str, symbol: str, adjust: str) -> Bars:
-    """Decode one fqkline response into bars, oldest first."""
-    code = market_code(symbol)
-    rows = json.loads(payload)["data"][code][f"{adjust}day"]
-    return tuple(
-        Bar(date=date.fromisoformat(row[0]),
-            open=float(row[1]),
-            high=float(row[3]),
-            low=float(row[4]),
-            close=float(row[2]),
-            volume=int(float(row[5])))
-        for row in rows
-    )
-#+end_src
-
-The row is =[date, open, close, high, low, volume]= -- close *before* high and low. That is the one thing here worth getting wrong quietly, so the mapping is spelled out positionally rather than left to a column list a reader has to hold in their head.
-
-Two smaller pieces of the same care: prices go straight from the wire string to =float=, and volume is =int(float(...))= because the endpoint writes it as =222233.000=. Volume is in 手, the unit =book='s lot size already speaks.
-
-#+begin_src python
-captured = json.dumps({"data": {"sz000528": {"qfqday": [
-    ["2026-09-29", "7.420", "7.360", "7.460", "7.350", "222233.000"],
-]}}})   # the wire order is O, C, H, L
-bar, = parse_bars(captured, "000528", "qfq")
-assert bar.date == date(2026, 9, 29)
-assert bar.open == 7.420
-assert bar.close == 7.360        # row[2], NOT row[3]
-assert bar.high == 7.460         # row[3]
-assert bar.low == 7.350          # row[4]
-assert bar.volume == 222233
-assert bar.low <= bar.close <= bar.high
-print(f"parsed: {bar.date} O{bar.open} C{bar.close} H{bar.high} "
-      f"L{bar.low} V{bar.volume}")
-#+end_src
-
-** one symbol, one request
-
-#+name: source-fetch-bars
-#+begin_src python
-def fetch_bars(symbol: str, adjust: str) -> Bars:
-    """One symbol's full stored window: a single request."""
-    code = market_code(symbol)
-    span = f"1900-01-01,{date.today().isoformat()}"
-    payload = get(f"{KLINE}?param={code},day,{span},{DEPTH},{adjust}")
-    return parse_bars(payload, symbol, adjust)
-#+end_src
-
-=DEPTH= is the endpoint's own cap, so the span asks for everything it will give and the cap does the limiting. This is also the only place =ADJUST= is read, which keeps the raw/qfq translation in one line rather than spread across call sites.
-
-** names
-
-=names.csv= is one shared file, so a subset refresh is exactly where it could quietly forget the rest of the watchlist. Three functions, each doing one of those steps:
-
-#+name: source-parse-names
-#+begin_src python
-def parse_names(text: str) -> dict[str, str]:
-    """Decode a `qt` response into symbol -> name."""
-    names = {}
-    for line in text.split(";"):
-        fields = line.split("~")
-        # A code with no data answers with a short line such as
-        # `v_pv_none_match="1"`, which must not become a name.
-        if len(fields) > 3 and fields[2].isdigit():
-            names[fields[2]] = "".join(fields[1].split())
-    return names
-#+end_src
-
-Each line looks like =v_sz000528="51~柳    工~000528~7.36~...=, where the name is padded with spaces that belong to the protocol's fixed-width layout, not to the name. Splitting on whitespace and rejoining is what turns =柳    工= back into =柳工=.
-
-#+begin_src python
-assert parse_names('v_sz000528="51~柳   工~000528~7.36~7.43";') == \
-    {"000528": "柳工"}
-assert parse_names('v_pv_none_match="1";') == {}
-print("names: padded 柳    工 decodes to 柳工")
-#+end_src
-
-#+name: source-fetch-names
-#+begin_src python
-def fetch_names(symbols: tuple[str, ...]) -> dict[str, str]:
-    """Every name in one request per BATCH symbols."""
-    codes = [market_code(symbol) for symbol in symbols]
-    names: dict[str, str] = {}
-    for start in range(0, len(codes), BATCH):
-        chunk = codes[start:start + BATCH]
-        # GBK, not UTF-8: the endpoint is an old one and answers in it.
-        names |= parse_names(get(QUOTE + ",".join(chunk), encoding="gbk"))
-    return names
-#+end_src
-
-#+name: source-merge-names
-#+begin_src python
-def merge_names(stored: dict[str, str],
-                fetched: dict[str, str]) -> dict[str, str]:
-    """Fetched names win; names of symbols not asked about survive."""
-    return stored | fetched
-#+end_src
-
-#+begin_src python
-assert merge_names({"000528": "柳工"}, {"600519": "贵州茅台"}) == \
-    {"000528": "柳工", "600519": "贵州茅台"}
-assert merge_names({"600519": "stale"}, {"600519": "fresh"}) == \
-    {"600519": "fresh"}
-print("merge: a subset refresh keeps the symbols it did not ask about")
-#+end_src
-
-** writing the store
-
-#+name: source-write-bars
-#+begin_src python
-def write_bars(path: Path, bars: Bars) -> None:
-    """Overwrite the file with the whole history, oldest first."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", newline="") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(("date", "open", "high", "low", "close", "volume"))
-        writer.writerows(
-            (bar.date.isoformat(), bar.open, bar.high, bar.low, bar.close,
-             bar.volume)
-            for bar in bars)
-#+end_src
-
-#+name: source-write-names
-#+begin_src python
-def write_names(path: Path, names: dict[str, str]) -> None:
-    """Write the whole symbol -> name table, sorted."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", newline="") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(("symbol", "name"))
-        writer.writerows(sorted(names.items()))
-#+end_src
-
-Overwrite rather than append is not laziness: a dividend rewrites the entire qfq series, so appending would silently mix adjustment vintages in one file. The column order written here is the one =market.read= expects, and it is matched by *name* on the way back in, so the two cannot drift apart silently.
-
-#+begin_src python
-from tempfile import TemporaryDirectory
-sample = (Bar(date(2026, 9, 28), 7.40, 7.50, 7.35, 7.46, 1000),
-          Bar(date(2026, 9, 29), 7.42, 7.46, 7.35, 7.36, 222233))
-with TemporaryDirectory() as tmp:
-    bars_path = Path(tmp) / "raw" / "TEST.csv"
-    write_bars(bars_path, sample)
-    assert bars_path.read_text().splitlines()[0] == \
-        "date,open,high,low,close,volume"
-    assert len(bars_path.read_text().splitlines()) == 3
-    names_path = Path(tmp) / "names.csv"
-    write_names(names_path, {"000528": "柳工", "600519": "贵州茅台"})
-    assert names_path.read_text().splitlines()[1].startswith("000528")
-print("write: 2 bars and 2 names round-tripped through a temp directory")
-#+end_src
-
-** the refresh driver
-
-#+name: source-refresh
-#+begin_src python
-def refresh(symbols: tuple[str, ...] = WATCHLIST,
-            series: tuple[str, ...] = ("raw", "qfq")) -> None:
-    """Fetch and store every symbol and series, then the names."""
-    for name in series:
-        for symbol in symbols:
-            bars = fetch_bars(symbol, ADJUST[name])
-            write_bars(STORE / name / f"{symbol}.csv", bars)
-            print(f"{name:>3} {symbol} {len(bars):>4} bars "
-                  f"{bars[0].date} .. {bars[-1].date}")
-            time.sleep(DELAY)
-
-    # Bars are one file per symbol, so refreshing a subset is partial by
-    # construction. `names.csv` is a single shared file, so it is the one place
-    # a subset refresh could quietly forget the symbols it was not asked
-    # about -- and `gather` would then raise a KeyError for every one of them.
-    path = STORE / "names.csv"
-    names = load_names() if path.exists() else {}
-    names = merge_names(names, fetch_names(symbols))
-    write_names(path, names)
-    print(f"names {len(names)} symbols stored")
-#+end_src
-
-This is the only function that both fetches and writes, and the only one you run by hand. Both series are refreshed in full rather than in place, and the names merge rather than replace, which is what makes =refresh 600519= safe to run on its own.
-
-** the command line
-
-#+name: source-main
-#+begin_src python
-if __name__ == "__main__":
-
-    match sys.argv[1:]:
-        case ["refresh", *symbols]:
-            refresh(tuple(symbols) or WATCHLIST)
-        case _:
-            raise SystemExit("usage: python source.py refresh [symbol ...]")
-#+end_src
-
-There is no default command on purpose: a bare =python source.py= must not fetch, because the safe default for something that talks to the network is to do nothing until asked.
-
-#+begin_example
-python source.py refresh                 # refresh the whole watchlist
-python source.py refresh 000528 600519   # refresh just these
-#+end_example
-
-** assembling the module
-
-#+begin_src python :tangle source.py :noweb tangle
-<<source-import>>
-
-<<source-constants>>
-
-<<source-get>>
-
-<<source-market-code>>
-
-<<source-parse-bars>>
-
-<<source-fetch-bars>>
-
-<<source-parse-names>>
-
-<<source-fetch-names>>
-
-<<source-merge-names>>
-
-<<source-write-bars>>
-
-<<source-write-names>>
-
-<<source-refresh>>
-
-<<source-main>>
-#+end_src
-
-** open questions
-
-- There is no recorded fetch date anywhere, so "when was this snapshot taken" is answerable only from the file's mtime. A =meta= row, or a =fetched.csv=, would make provenance explicit.
-- The wire-format check above is an org example now, so =python source.py= no longer runs it. That moves the column-order guard from "always" to "when you evaluate the block" -- worth revisiting if a bad refresh ever slips through.
-- =refresh= rewrites the whole watchlist one symbol at a time; a single failed symbol aborts the run partway. That is loud rather than silent, but it leaves the store half-refreshed, and the qfq/raw vintage problem that motivates overwriting makes a half-refreshed store worse than an old one.
-* book
+* account
 :PROPERTIES:
 :header-args:python: :session book :results output :kernel notes :exports both
 :END:
+
+replay ledger to get as_of account, current prices read from =gather= results.
 
 The booking consists of three parts: the static account (holding at any specific moment), the dynamic ledger (the total trading history), and how to replay the ledger to get the account.
 
@@ -1657,7 +1631,12 @@ Instead of tangling blocks one by one, all tangle blocks go here, in proper orde
 8. TODO: Trade, a logical round trip or lifecycle grouping of orders and fills.
 9. reconsider float vs integer cents when the ledger must reconcile to the fen.
 
-* decide
+* beliefs
+
+This is the statistical modeling step.
+We have a watch list and we also have the market information for the stocks on the watch list.
+And the next step, we should do some statistical modeling to determine our beliefs on them.
+These beliefs will be used to help us later make the decisions.
 
 TODO: rewrite from =infer.py= and =rebalance.py=. Takes =Rules= explicitly; returns signals and orders, never touches the account's policy fields.
 
@@ -1747,8 +1726,13 @@ Still open in the decision layer:
 
 Question: should we allow speculative orders at all, given that =rebalance= currently prices everything at one mark?
 
-* report
+* orders
+This is the decision-making step, under uncertainty and constraints.
+Here in this step, we make the actual investment decisions.
+* evaluations
 
+And all the evaluations of investment decisions should both be here.
+I'm still not sure about the details.
 TODO: rewrite from =evaluate.py= and =render.py=. The human interface: the risk picture, then the ticket.
 
 ** render: the ticket
@@ -1768,7 +1752,7 @@ BUY  000001 平安银行    1,000 @ 11.590 =    11,590.00   momentum +4.60%
 - The last line nets sells against buys, which is the cash the batch frees.
 - =trade.main= prints =Metrics= before the ticket, then calls =check_batch= for the batch's own guarantees and reports any position that T+1 still leaves over the cap.
 - The =reason= column is the deciding rule, not a label: =momentum -9.58%= means the exit came from the signal, while =overweight= would mean it came from the cap. On this session every sale says =momentum=, which is the honest summary of a quarter that was down for most of the book.
-
+* session orchestration
 * backtesting
 
 The one design decision that makes backtesting possible is already everywhere: functions take =as_of= instead of reading a clock. =replay= filters the ledger at =as_of=, =Position.available= and =Portfolio.shares_to_sell_to_cap= use it for T+1, and =trade(as_of)= threads it through to =gather(as_of)=, so a session cannot see a bar after its own date.

@@ -7,7 +7,8 @@ import urllib.request
 from datetime import date
 from pathlib import Path
 
-from market import STORE, WATCHLIST, Bar, Bars, load_names
+from market import STORE, Bar, Bars, load_names
+from watches import WATCHLIST
 
 KLINE = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
 QUOTE = "https://qt.gtimg.cn/q="
