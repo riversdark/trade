@@ -1,27 +1,23 @@
 import csv
 import math
+import time
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
 
+from source import Bar, Bars
 from watches import WATCHLIST
 
 type Money = float           # cash, prices, and any amount of money
 type Quantity = int          # a count of shares
 
-@dataclass(frozen=True)
-class Bar:
-    """One day's OHLCV observation for one instrument."""
-    # TODO: constraint checks? such as low <= open/close <= high
-
-    date: date
-    open: Money
-    high: Money
-    low: Money
-    close: Money
-    volume: Quantity         # 手, lots of 100 shares
-
-type Bars = tuple[Bar, ...]             # ordered oldest first
+def history(*closes: Money) -> Bars:
+    """Build flat example bars from literal closes: open=high=low=close."""
+    return tuple(
+        Bar(date(2026, 1, 1) + timedelta(days=offset),
+            close, close, close, close, 0)
+        for offset, close in enumerate(closes)
+    )
 
 @dataclass(frozen=True)
 class Instrument:
@@ -51,11 +47,32 @@ def mark(market: Market, symbol: str) -> Money:
 # use hardlink for the moment
 STORE = Path.home() / "git" / "notes" / "projects" / "trade" / "bars"
 SERIES = ("raw", "qfq")
+ADJUST = {"raw": "", "qfq": "qfq"}
 
-# How many bars downstream gets. The modelling layer's momentum is "the return
-# over the window", so the window *is* the lookback: 60 trading days is roughly
-# a quarter, and an unbounded window would have turned that into a 2.5-year
-# return the moment the store grew past a handful of fixture closes.
+def merge_names(stored: dict[str, str],
+                fetched: dict[str, str]) -> dict[str, str]:
+    """Fetched names win; names of symbols not asked about survive."""
+    return stored | fetched
+
+def write_bars(path: Path, bars: Bars) -> None:
+    """Overwrite the file with the whole history, oldest first."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(("date", "open", "high", "low", "close", "volume"))
+        writer.writerows(
+            (bar.date.isoformat(), bar.open, bar.high, bar.low, bar.close,
+             bar.volume)
+            for bar in bars)
+
+def write_names(path: Path, names: dict[str, str]) -> None:
+    """Write the whole symbol -> name table, sorted."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(("symbol", "name"))
+        writer.writerows(sorted(names.items()))
+
 WINDOW = 60
 
 def read(symbol: str, series: str) -> Bars:
@@ -70,9 +87,30 @@ def read(symbol: str, series: str) -> Bars:
         )
 
 def load_names() -> dict[str, str]:
-    """Symbol -> Chinese name, as source.py recorded it."""
+    """Symbol -> Chinese name in the local snapshot."""
     with open(STORE / "names.csv", newline="") as handle:
         return {row["symbol"]: row["name"] for row in csv.DictReader(handle)}
+
+def refresh(symbols: tuple[str, ...] = (),
+            series: tuple[str, ...] = SERIES) -> None:
+    """Fetch and store every selected symbol and series."""
+    from source import DELAY, fetch_bars, fetch_names, parse_names
+
+    symbols = symbols or WATCHLIST
+    for name in series:
+        for symbol in symbols:
+            bars = fetch_bars(symbol, ADJUST[name])
+            write_bars(STORE / name / f"{symbol}.csv", bars)
+            print(f"{name:>3} {symbol} {len(bars):>4} bars "
+                  f"{bars[0].date} .. {bars[-1].date}")
+            time.sleep(DELAY)
+
+    # names.csv is shared, so a subset refresh must preserve other names.
+    path = STORE / "names.csv"
+    names = load_names() if path.exists() else {}
+    names = merge_names(names, parse_names(fetch_names(symbols)))
+    write_names(path, names)
+    print(f"names {len(names)} symbols stored")
 
 def gather(as_of: date | None = None,
            window: int | None = WINDOW) -> Market:

@@ -1,28 +1,33 @@
-import csv
-import json
 import sys
 import time
+import json
 import urllib.error
 import urllib.request
 from datetime import date
-from pathlib import Path
+from dataclasses import dataclass
 
-from market import STORE, Bar, Bars, load_names
-from watches import WATCHLIST
+@dataclass(frozen=True)
+class Bar:
+    """One day's OHLCV observation for one instrument."""
+
+    date: date
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: int
+
+type Bars = tuple[Bar, ...]             # ordered oldest first
 
 KLINE = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
 QUOTE = "https://qt.gtimg.cn/q="
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) notes-trade/0.1"}
 
-DEPTH = 640     # The endpoint's own cap, about two and a half years
+DEPTH = 10     # rows requested while exploring; endpoint cap is 640
 DELAY = 0.35    # Seconds between symbol requests
 BATCH = 50      # symbols per quote request
 RETRIES = 3
-
-# The store's series names are about intent; the API's `adjust` values are
-# about the wire. Keep the translation in one place.
-ADJUST = {"raw": "", "qfq": "qfq"}
 
 def get(url: str, *, encoding: str = "utf-8") -> str:
     """One GET, retried, so a dropped connection is not a data gap."""
@@ -47,7 +52,7 @@ def market_code(symbol: str) -> str:
     return f"sz{symbol}"
 
 def parse_bars(payload: str, symbol: str, adjust: str) -> Bars:
-    """Decode one fqkline response into bars, oldest first."""
+    """Decode one fqkline response into market bars, oldest first."""
     code = market_code(symbol)
     rows = json.loads(payload)["data"][code][f"{adjust}day"]
     return tuple(
@@ -61,82 +66,36 @@ def parse_bars(payload: str, symbol: str, adjust: str) -> Bars:
     )
 
 def fetch_bars(symbol: str, adjust: str) -> Bars:
-    """One symbol's full stored window: a single request."""
-    code = market_code(symbol)
+    """Fetch and parse one symbol's daily bars."""
     span = f"1900-01-01,{date.today().isoformat()}"
-    payload = get(f"{KLINE}?param={code},day,{span},{DEPTH},{adjust}")
-    return parse_bars(payload, symbol, adjust)
+    url = f"{KLINE}?param={market_code(symbol)},day,{span},{DEPTH},{adjust}"
+    return parse_bars(get(url), symbol, adjust)
 
-def parse_names(text: str) -> dict[str, str]:
-    """Decode a `qt` response into symbol -> name."""
-    names = {}
-    for line in text.split(";"):
-        fields = line.split("~")
-        # A code with no data answers with a short line such as
-        # `v_pv_none_match="1"`, which must not become a name.
-        if len(fields) > 3 and fields[2].isdigit():
-            names[fields[2]] = "".join(fields[1].split())
-    return names
-
-def fetch_names(symbols: tuple[str, ...]) -> dict[str, str]:
-    """Every name in one request per BATCH symbols."""
+def fetch_names(symbols: tuple[str, ...]) -> tuple[str, ...]:
+    """Return raw quote responses, one per BATCH symbols."""
     codes = [market_code(symbol) for symbol in symbols]
-    names: dict[str, str] = {}
+    responses = []
     for start in range(0, len(codes), BATCH):
         chunk = codes[start:start + BATCH]
         # GBK, not UTF-8: the endpoint is an old one and answers in it.
-        names |= parse_names(get(QUOTE + ",".join(chunk), encoding="gbk"))
+        responses.append(get(QUOTE + ",".join(chunk), encoding="gbk"))
+    return tuple(responses)
+
+def parse_names(responses: tuple[str, ...]) -> dict[str, str]:
+    """Decode quote responses into symbol -> name."""
+    names: dict[str, str] = {}
+    for text in responses:
+        for line in text.split(";"):
+            fields = line.split("~")
+            if len(fields) > 3 and fields[2].isdigit():
+                names[fields[2]] = "".join(fields[1].split())
     return names
-
-def merge_names(stored: dict[str, str],
-                fetched: dict[str, str]) -> dict[str, str]:
-    """Fetched names win; names of symbols not asked about survive."""
-    return stored | fetched
-
-def write_bars(path: Path, bars: Bars) -> None:
-    """Overwrite the file with the whole history, oldest first."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", newline="") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(("date", "open", "high", "low", "close", "volume"))
-        writer.writerows(
-            (bar.date.isoformat(), bar.open, bar.high, bar.low, bar.close,
-             bar.volume)
-            for bar in bars)
-
-def write_names(path: Path, names: dict[str, str]) -> None:
-    """Write the whole symbol -> name table, sorted."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", newline="") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(("symbol", "name"))
-        writer.writerows(sorted(names.items()))
-
-def refresh(symbols: tuple[str, ...] = WATCHLIST,
-            series: tuple[str, ...] = ("raw", "qfq")) -> None:
-    """Fetch and store every symbol and series, then the names."""
-    for name in series:
-        for symbol in symbols:
-            bars = fetch_bars(symbol, ADJUST[name])
-            write_bars(STORE / name / f"{symbol}.csv", bars)
-            print(f"{name:>3} {symbol} {len(bars):>4} bars "
-                  f"{bars[0].date} .. {bars[-1].date}")
-            time.sleep(DELAY)
-
-    # Bars are one file per symbol, so refreshing a subset is partial by
-    # construction. `names.csv` is a single shared file, so it is the one place
-    # a subset refresh could quietly forget the symbols it was not asked
-    # about -- and `gather` would then raise a KeyError for every one of them.
-    path = STORE / "names.csv"
-    names = load_names() if path.exists() else {}
-    names = merge_names(names, fetch_names(symbols))
-    write_names(path, names)
-    print(f"names {len(names)} symbols stored")
 
 if __name__ == "__main__":
 
     match sys.argv[1:]:
         case ["refresh", *symbols]:
-            refresh(tuple(symbols) or WATCHLIST)
+            from market import refresh
+            refresh(tuple(symbols))
         case _:
             raise SystemExit("usage: python source.py refresh [symbol ...]")
