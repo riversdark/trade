@@ -13,7 +13,7 @@ Run from this folder, using the repo-root venv (`source ../../.venv/bin/activate
 - Tangle after every org edit: `emacs --batch trade.org --eval '(org-babel-tangle)'` (or `C-c C-v t` from the buffer).
 - Check a module: `python <module>.py`. The new modules (`book`, `market`, `watches`) have no `__main__`, so this is an import check and must exit 0; the old modules run their offline self-test under `__main__`.
 - Name-collision check after adding any named block: `grep -o '^#+name: .*' trade.org | sort | uniq -d` — must print nothing.
-- Refresh market data, deliberately (the only network step): `python source.py refresh [symbol ...]`; no symbol means the whole watchlist. Everything else reads the local snapshot in `bars/`.
+- Refresh and save market data deliberately: `python source.py refresh [symbol ...]`; no symbol means the whole watchlist. Other modules read the local snapshot in `bars/`. The source section may also demonstrate its fetch function against real endpoints, as an explicit interactive example.
 
 ## finding your way in `trade.org`
 
@@ -43,24 +43,24 @@ Data lives outside the code: `bars/raw/` and `bars/qfq/` hold one CSV per symbol
 
 ## general principles
 
-This is a human-in-the-loop project, the building process is also a learning process.
-- check file updates before each step, because the human in the loop will also be constantly updating them.
-- aim for incremental edits rather than wholesale rewrites, easier for the human to keep track of changes.
-- proceed in small, verifiable steps, let the human understand each new functionality before moving on.
+This is a human-in-the-loop project. The agent is a collaborator and learning aid; the human owns the design and development direction.
+- Before each step, check for the human's latest edits and preserve them.
+- Work on one agreed task at a time. Make the smallest coherent change that completes that step, then explain what changed, why, and how it was checked so the human can review it and choose the next direction.
+- Do not silently expand the task into later modules, broad rewrites, or speculative architecture. When a consequential design choice is unclear, explain the tradeoff and discuss it with the human; use judgment for routine implementation details within the agreed direction.
+- Keep the reasoning visible: explain relevant assumptions, patterns, and new functionality in plain language, and point out useful things the human can learn from the change.
 - aim for concise code and clear logic, don't write overly defensive code, let edge cases fail loudly.
-- note new packages/functionalities, noteworthy programming patterns, etc, so I can continuously improve my skills.
-- build up gradually, don't add too much complexity at once.
-- each agent action should focus on one and only one task
+- Build up gradually; don't add complexity before the human has had a chance to understand and steer the work.
 - the first solution will never be the best one, because we make overall plans at the start and work out the details later; that's alright, because refactoring is inherently part of programming
 
 ## the section format
 
-Tests are written in the same file, alongside the code, so that they both serve as tests and runnable examples; they are often collected from interaction exploration, and they stay offline — nothing in them reaches the network.
+Examples are written in the same file, alongside the code, so they explain the behavior and can be explored interactively. Keep checks and examples offline by default. When understanding a network-facing function depends on seeing the real endpoint and response shape, show that as a clearly identified, deliberate source-section example; don't make routine module checks or other examples depend on the network.
 
 Every module section follows this shape. It was worked out on `book` and is the contract for the ones after it.
 
+- **Keep the literate explanation easy to follow.** Use headings for meaningful logical boundaries, not every small definition. Place a result type where the reader first needs to understand it, alongside the function that produces or consumes it, so the data shape and its handling are clear in one pass.
 - **Definitions are ordered by the dependence tree**, and each section states that tree at its head — `CashFlow + (Side -> Fill) -> Entry -> Ledger`. A block may use only what is already defined above it, so the exported file imports cleanly and reads bottom-up without forward references.
-- **Every definition is validated immediately after it appears.** The example is part of the explanation, not a chore deferred to the end, which is exactly why the work happens in an interactive language. It runs in the module's session, so the variables it binds stay live for the examples below.
+- **Every definition is explored immediately after it appears.** The example is part of the explanation, not a chore deferred to the end, which is exactly why the work happens in an interactive language. It runs in the module's session, so the variables it binds stay live for the examples below. Use a real endpoint example for source fetching where that makes the returned data and its parsing clear; keep other examples offline.
 - **Examples are not tangled.** Only the assembly block at the end of the section carries `:tangle <module>.py`, so examples never reach the module and `python <module>.py` does not run them. The tests are done by hand, in the org file.
 - **Docstrings are one line.** Anything longer is prose, in the section, where it can be read as an argument. A one-line summary survives in the tangled file and in `help()`, which is all a docstring is for.
 - **No machinery.** There is no test framework, no `check_` functions, and no runner. An example is a few lines that assert and print what they saw. Because the session carries state forward, a later example reuses an earlier variable instead of rebuilding a thin fixture of its own.
