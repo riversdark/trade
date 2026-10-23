@@ -12,7 +12,7 @@ I'd also need to brush up [[id:2acf272b-757a-447b-b43f-396f00b98744][econ/financ
 
 * background
 
-this is a Bayesian guided, Agentic AI aided trading system for China A shares.
+This is a Bayesian guided, Agentic AI aided trading system for China A shares.
 
 I have an existing trading account with about 47K equity, I want to keep the capital as is while I implement the project, and do some vibe trading along the way.
 After setting up the project, I intend to increase the capital to about 100K, run with it for a while (maybe 6 months, to the beginning of 2027), accumulate some experience, and then maybe increase capital to about 200K, for another 1-2 years.
@@ -29,6 +29,143 @@ managing risk should be a primary concern from the very start.
 
 common failing points: data quality, execution assumptions, risk controls.
 
+* market research
+
+We need a deep research on all the characteristics of the Chinese stock market. It's important to understand the general market rules, the specific sectors and stocks, the players in the market, the general earning prospects, etc.
+
+** Chinese stock market: key characteristics
+
+*** Scope and structure
+- *Mainland A-shares*: Shanghai (SSE), Shenzhen (SZSE), Beijing (BSE). RMB-denominated, mostly domestic investors.
+- *B-shares*: foreign-currency shares, largely obsolete/illiquid.
+- *Hong Kong H-shares / red chips / P-chips*: offshore listings of Chinese companies.
+- *US ADRs / VIE structures*: many tech/internet names, subject to geopolitical and audit risk.
+- *Regulators*: CSRC, PBOC, SAFE, NDRC, State Council. Policy signals often matter more than fundamentals in the short run.
+
+*** Trading rules and frictions
+- *T+1*: you cannot sell A-shares bought the same day.
+- *Price limits*: main board ±10%, ChiNext/STAR ±20%, BSE ±30%. ST stocks ±5%.
+- *Lot size*: usually 100 shares.
+- *Short selling*: possible via margin/securities lending, but constrained and often expensive.
+- *IPO regime*: moved from approval-based to registration-based (STAR, ChiNext, BSE, then main board). Still heavy state influence.
+- *Delisting*: historically rare, now increasing, but still not US-like.
+- *Trading suspensions*: historically used to avoid crashes; less common now but still a risk.
+
+*** Investor base
+- *Retail investors*: dominate trading volume (roughly 60–80% depending on period), high turnover, momentum/theme-driven.
+- *Institutions*: public mutual funds, private funds, quant funds, insurance, pensions, National Social Security Fund.
+- *State players*: Central Huijin, China Securities Finance Corp (“national team”) can intervene to stabilize markets.
+- *Foreign investors*: via Stock Connect (Northbound/Southbound), QFII/RQFII. Northbound flow is a watched signal.
+
+*** Market composition and sectors
+- *Indices*: SSE Composite, CSI 300, CSI 500, CSI 1000, ChiNext, STAR 50, Hang Seng, MSCI China.
+- *Heavy weights*: financials (banks, insurance, brokers), industrials, materials, energy, consumer staples (especially liquor), healthcare.
+- *Growth themes*: EVs, batteries, solar, semiconductors, AI, defense, high-dividend SOEs.
+- *Distressed areas*: real estate, local government financing vehicles, some consumer discretionary.
+
+*** Earnings prospects and macro
+- *Macro*: slowing growth, property crisis, local debt overhang, deflationary pressure, weak consumer confidence, export resilience, geopolitical tension.
+- *Policy themes*: “common prosperity,” SOE reform, “Sino-specific valuation” (中特估), high dividend, tech self-sufficiency, stimulus.
+- *Sector outlooks*:
+  - *Banks/SOEs*: cheap, high dividend, but slow growth and hidden credit risk.
+  - *Consumer*: recovery uncertain; premium liquor resilient, mass market under pressure.
+  - *Tech/Semis*: policy support vs. US restrictions; high volatility.
+  - *New energy*: oversupply and price wars in solar/EV, but long-term growth.
+  - *Real estate*: restructuring, high risk, policy-dependent.
+
+*** Is it “gambling” or “rigged”?
+- *Not purely random*: returns show factor structure (size, value, reversal, momentum, quality, low volatility, turnover), policy cycles, liquidity effects, and sentiment cycles.
+- *But structurally disadvantaged for retail*:
+  - Information asymmetry (insiders, state, large funds).
+  - T+1, price limits, shorting constraints create asymmetric payoffs.
+  - IPO underpricing, lockups, insider selling, related-party transactions.
+  - Weak minority shareholder protection, accounting fraud (e.g., Kangmei), earnings management.
+  - Policy intervention and “national team” buying can distort prices.
+  - Market manipulation, “pump and dump,” and theme speculation are common.
+- *Verdict*: it is not a literal casino, but it is a heavily regulated, policy-driven, friction-heavy market where retail often loses. A Bayesian statistician can have an edge, but only with:
+  - Point-in-time data, survivorship-bias-free universes.
+  - Realistic trading rules (T+1, limits, costs, capacity).
+  - Regime-switching models, robust priors, Bayesian model averaging.
+  - Awareness of non-stationarity and policy shocks.
+  - Niche strategies: small-cap quant, event-driven, AH/ETF arbitrage, convertible bonds, statistical arb.
+
+---
+
+** next step
+
+If you want, I can outline a concrete research plan: data sources, factor library, backtest engine rules, and a Bayesian framework for regime detection and position sizing.
+
+** 前复权 (qfq) and 后复权 (hfq)                            :fc:
+:PROPERTIES:
+:FC_CREATED: 2026-09-30T08:27:07Z
+:FC_TYPE:  cloze
+:FC_ALGO:  sm2
+:ID:       731d9e85-63d8-45b8-8696-c0c4a0b9557a
+:FC_CLOZE_MAX: 1
+:FC_CLOZE_TYPE: deletion
+:END:
+:REVIEW_DATA:
+| position | ease | box | interval | due                  |
+|----------+------+-----+----------+----------------------|
+|        0 | 2.50 |   4 |    16.05 | 2026-11-02T04:42:56Z |
+|        1 | 2.50 |   4 |    16.21 | 2026-11-02T09:01:12Z |
+:END:
+
+These are *price adjustment methods* for {{dividends, splits, and rights issues}@0}. They remove artificial gaps so charts and returns are continuous.
+
+qfq anchors to the latest, hfq anchors to the {{earliest}@1}.
+
+- *For trading*: use raw prices for orders, limits, and execution.
+- *For charting*: use qfq for clean technical patterns and current price context.
+- *For backtesting/returns*: use hfq or raw + cumulative adjustment factors.
+- *For quant*: store raw prices and 复权因子 (adjustment factors). Compute total returns yourself. This avoids vendor inconsistencies and look-ahead bias.
+- *Pitfalls*: vendors differ on dividend tax, rights issues, and rounding. qfq can even show negative historical prices if cumulative dividends exceed the price.
+
+Never use qfq for long-term return calculations unless you explicitly account for the changing anchor.
+*** 不复权 (raw)
+Actual traded prices. Use for:
+- Order execution, limit prices, actual market microstructure.
+- Volume, spread, tax lots.
+
+*** 前复权 (qfq) — “forward/previous adjustment”
+- *Anchor*: the *latest* price is unchanged (equals raw current price).
+- *Historical prices* are adjusted downward/upward to remove ex-dividend/ex-rights gaps.
+- *Useful for*: technical analysis, chart patterns, current price reference, setting alerts, visual continuity.
+- *Caveat*: qfq history *changes* whenever a new dividend/split occurs, because the anchor is the present. So cached qfq data becomes stale.
+
+*** 后复权 (hfq) — “backward/post adjustment”
+- *Anchor*: the *earliest* price is unchanged.
+- *Later prices* are adjusted upward to reflect cumulative dividends/splits.
+- *Useful for*: backtesting, performance measurement, total return calculation, long-term charts, comparing cumulative returns across stocks.
+- *Caveat*: hfq prices are not real traded prices and are often much higher than raw.
+
+*** Simple example (one cash dividend, D=5)
+Raw: Day0 = 100, Day1 ex = 95, Day2 = 100.
+
+| Day | Raw | qfq | hfq |
+|-----|-----|-----|-----|
+| 0   | 100 | 95  | 100 |
+| 1   | 95  | 95  | 100 |
+| 2   | 100 | 100 | 105.26 |
+
+- qfq removes the drop on Day1; current price stays raw.
+- hfq keeps Day0=100 and scales later prices by the cumulative adjustment factor (assuming dividend reinvestment). The total return from Day0 to Day2 is 5.26% in both qfq and hfq.
+** open questions
+
+I have heard people complain that the Chinese stock market is purely gambling, and even worse, it's rigged gambling. I need to know if, and to what extent, this is true, and if I actually have an edge as a Bayesian statistician.
+
+However, I guess this can only be realistically understood after I've built the system and I've made some investments myselve, so I'll leave it as an open question for now.
+
+I heard that the Chinese market is regime-dependent and policy-driven. how to understand this?
+
+** distilled market rules
+
+These are to be encoded into the project (gradually).
+- A shares can only be purchased in 100-share lots. (=Portfolio.lot_size=)
+- it's T+1: stock bought today can only be sold next day. (=Position.available=, =sell_lots=)
+- main-board stocks have a 10% price change limit.
+
+主板风险警示股票？
 * packages
 
 - Enum and dataclasses for building the vocabulary
@@ -43,6 +180,7 @@ Nothing is imported yet beyond the standard library. Money is a plain =float= (s
 
 this system is used to help making buy/sell decisions, but the actual executions are done manually, outside the system.
 The whole workflow is one session, and every step of it is one function in one module:
+This both serves as a project plan and the session orchestration.
 
 #+name: wish-trade
 #+begin_src python :eval never
@@ -114,15 +252,7 @@ print(f"watchlist: {len(WATCHLIST)} symbols:\n {WATCHLIST}")
 
 =source.py= fetches and decodes Tencent responses into the market's =Bar= and =Bars= types. It does not know about the snapshot format; the market module owns storage. Importing either module makes no request; only an explicit fetch or refresh reaches the network.
 
-Dependence tree: =Bar / Bars + symbol -> market_code -> HTTP request -> response text -> Bar / Bars / names=. This is the only module in the project that opens a socket; the market module calls its fetch functions only during an explicit refresh.
-
-akshare's headline =stock_zh_a_hist= reads eastmoney, and eastmoney **closes the connection on every attempt from this machine** -- =RemoteDisconnected=, with or without a browser User-Agent and Referer. It is not a rate limit to pace around; that route is simply shut. Batch-fetching harder would only produce more of the same.
-
-The fix is not a cleverer client but a different shape: fetch once, store, and read the store. A session then costs zero requests, so the rate limit stops being a constraint on how the system works. It also buys three things that matter more than the convenience: the tests are deterministic and offline, a pinned =as_of= cannot see the future, and a failed fetch is a visible missing file rather than a silently short price series.
-
-akshare is not used, for two measured reasons rather than taste: its eastmoney path is dead here, and its Tencent wrapper loops one request per *year* while importing pandas and tqdm to hand back a DataFrame. The endpoint underneath returns 640 daily bars in a single request. The whole 11-name, two-series snapshot is 23 requests and about ten seconds.
-
-** imports
+I've tried tushare and akshare before, but neither seem to have stable API accesses due to EastMoney limits. Tencent seems to work well (for the moment).
 
 #+name: source-import
 #+begin_src python :results none
@@ -137,20 +267,19 @@ from dataclasses import dataclass
 
 Importing =source= defines the response types and parsers but does not open a connection. Network requests happen only when a fetch function is called; the CLI branch delegates explicit refresh to the market module.
 
-** the endpoints
+** configure the endpoints
 
 Two Tencent endpoints, both verified working from this machine on 2026-09-29, both reached with the standard library (=urllib=, no pandas):
 
-| endpoint          | shape                                                        |
-|-------------------+--------------------------------------------------------------|
-| web.ifzq.gtimg.cn | one request per symbol -> up to 640 daily OHLCV bars         |
-| qt.gtimg.cn/q=    | one request -> many symbols' Chinese names and latest quotes |
-
 #+name: source-constants
 #+begin_src python
+# one request per symbol -> up to 640 daily OHLCV bars
 KLINE = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+
+# one request -> many symbols' Chinese names and latest quotes
 QUOTE = "https://qt.gtimg.cn/q="
 
+# Q: what's this for?
 HEADERS = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) notes-trade/0.1"}
 
 DEPTH = 10     # rows requested while exploring; endpoint cap is 640
@@ -165,16 +294,18 @@ The request currently asks for 10 rows while we explore the response shape; the 
 
 #+begin_src python
 from urllib.parse import urlparse
+
 parsed = urlparse(KLINE)
+
 assert parsed.scheme == "https" and parsed.hostname == "web.ifzq.gtimg.cn"
 assert RETRIES > 1 and DELAY > 0
+
 print(f"politeness: {RETRIES} tries, {DELAY}s pacing, {BATCH} names/request")
 #+end_src
 
-#+RESULTS:
-: politeness: 3 tries, 0.35s pacing, 50 names/request
+** define the request codes and functions
 
-** requests and codes
+We access both the endpoints with the same protocol.
 
 #+name: source-get
 #+begin_src python
@@ -195,7 +326,7 @@ def get(url: str, *, encoding: str = "utf-8") -> str:
 
 #+RESULTS: source-get
 
-We access the endpoint very politely: =DELAY= paces symbol requests, and the retry sleeps =DELAY * 2 ** attempt= between attempts, so a dropped connection costs a retry instead of a hole in the snapshot and a full refresh stays a background chore rather than something that looks like an attack.
+We access the endpoints very politely: =DELAY= paces symbol requests, and the retry sleeps =DELAY * 2 ** attempt= between attempts, so a dropped connection costs a retry instead of a hole in the snapshot and a full refresh stays a background chore rather than something that looks like an attack.
 
 =RemoteDisconnected= is a subclass of =OSError=, so the retry catches the same failures that make the eastmoney route hopeless. The difference is that this endpoint answers on the second try.
 
@@ -208,7 +339,7 @@ print(json.loads(wire)["data"]["sz000528"]["qfqday"][0])
 
 #+RESULTS:
 : str
-: ['2026-10-08', '7.458', '7.478', '7.528', '7.448', '150927.000']
+: ['2026-10-09', '7.498', '7.528', '7.558', '7.468', '170018.000']
 
 The endpoints add a prefix for the exchange: 6xxxxx and 9xxxxx are Shanghai, 4xxxxx and 8xxxxx Beijing, everything else Shenzhen.
 
@@ -235,7 +366,7 @@ print("codes: 000528 -> sz, 600519 -> sh, 830799 -> bj")
 #+RESULTS:
 : codes: 000528 -> sz, 600519 -> sh, 830799 -> bj
 
-** daily bars
+** fetch daily bars
 
 The =Bar= record is the parser's result type and the market model's daily observation. =Bars= keeps one response oldest first.
 
@@ -287,8 +418,8 @@ print(recent[-1])
 
 #+RESULTS:
 : parsed: 10 bars
-: Bar(date=datetime.date(2026, 10, 8), open=7.458, high=7.528, low=7.448, close=7.478, volume=150927)
-: Bar(date=datetime.date(2026, 10, 21), open=7.838, high=7.868, low=7.788, close=7.788, volume=199719)
+: Bar(date=datetime.date(2026, 10, 9), open=7.498, high=7.558, low=7.468, close=7.528, volume=170018)
+: Bar(date=datetime.date(2026, 10, 22), open=7.9, high=8.02, low=7.86, close=7.96, volume=470792)
 
 combine fetching url and parsing:
 
@@ -310,7 +441,7 @@ assert len(fb) == DEPTH
 
 #+RESULTS:
 
-** names
+** fetch instrument names
 
 =names.csv= is one shared file, so a subset refresh is exactly where it could quietly forget the rest of the watchlist.
 The fetch function batches requests, and the parser below turns the replies into a symbol-to-name mapping.
@@ -330,7 +461,8 @@ def fetch_names(symbols: tuple[str, ...]) -> tuple[str, ...]:
 
 #+RESULTS: source-fetch-names
 
-note that we are fetching in BATCHes, names in the same batch will be glued together.
+Note that we are fetching in BATCHes, names in the same batch will be glued together.
+For this reason the return value is a tuple, each item a batch of results separated by =;=.
 
 #+begin_src python
 syms = ("000528", "601226")
@@ -343,9 +475,11 @@ for response in quotes:
 #+end_src
 
 #+RESULTS:
-: ['柳    工', '000528', '7.96']
-: ['华电科工', '601226', '6.24']
+: ['柳    工', '000528', '8.51']
+: ['华电科工', '601226', '6.18']
 : []
+
+The result is then parsed into a dict as follows.
 
 #+name: source-parse-names
 #+begin_src python
@@ -374,9 +508,9 @@ print(names)
 
 ** the command line
 
-this calls functionalities from later modules.
-ugly, either move refresh here, or move this call to later.
-to be done in later refactors.
+: TODO this calls functionalities from later modules.
+: ugly, either move refresh here, or move this call to later.
+: to be done in later refactors.
 
 #+name: source-main
 #+begin_src python
@@ -390,6 +524,8 @@ if __name__ == "__main__":
             raise SystemExit("usage: python source.py refresh [symbol ...]")
 #+end_src
 
+#+RESULTS: source-main
+
 There is no default command on purpose: a bare =python source.py= must not fetch, because the safe default for something that talks to the network is to do nothing until asked.
 
 #+begin_example
@@ -399,7 +535,11 @@ python source.py refresh 000528 600519   # refresh just these
 
 ** assembling the module
 
-#+begin_src python :tangle source.py :noweb tangle
+Dependence tree: symbol -> market_code -> HTTP request -> response text -> Bars/names.
+
+This is the only module in the project that opens a socket; the market module calls its fetch functions only during an explicit refresh.
+
+#+begin_src python :tangle source.py :noweb tangle :eval never
 <<source-import>>
 
 <<source-bar>>
@@ -1744,7 +1884,6 @@ BUY  000001 平安银行    1,000 @ 11.590 =    11,590.00   momentum +4.60%
 - The last line nets sells against buys, which is the cash the batch frees.
 - =trade.main= prints =Metrics= before the ticket, then calls =check_batch= for the batch's own guarantees and reports any position that T+1 still leaves over the cap.
 - The =reason= column is the deciding rule, not a label: =momentum -9.58%= means the exit came from the signal, while =overweight= would mean it came from the cap. On this session every sale says =momentum=, which is the honest summary of a quarter that was down for most of the book.
-* session orchestration
 * backtesting
 
 The one design decision that makes backtesting possible is already everywhere: functions take =as_of= instead of reading a clock. =replay= filters the ledger at =as_of=, =Position.available= and =Portfolio.shares_to_sell_to_cap= use it for T+1, and =trade(as_of)= threads it through to =gather(as_of)=, so a session cannot see a bar after its own date.
@@ -1759,136 +1898,3 @@ Still to build:
 - [ ] Bar: market data for one symbol, point-in-time, to date
 - [ ] corporate actions and adjustment policies
 
-* Research Chinese stock market
-
-We need a deep research on all the characteristics of the Chinese stock market. It's important to understand the general market, the specific sectors and stocks, the players in the market, the general earning prospects, etc.
-
-I have heard people complain that the Chinese stock market is purely gambling, and even worse, it's a rigged gambling system. I need to know if, and to what extent, this is true, and if I actually have an edge as a Bayesian statistician.
-However this can only be realistically understood after the system is built and I have run some investment experiements myselves, so I'll leave it here for now.
-
-the Chinese market is regime-dependent and policy-driven. how to understand this.
-
-** Chinese stock market: key characteristics
-
-*** Scope and structure
-- *Mainland A-shares*: Shanghai (SSE), Shenzhen (SZSE), Beijing (BSE). RMB-denominated, mostly domestic investors.
-- *B-shares*: foreign-currency shares, largely obsolete/illiquid.
-- *Hong Kong H-shares / red chips / P-chips*: offshore listings of Chinese companies.
-- *US ADRs / VIE structures*: many tech/internet names, subject to geopolitical and audit risk.
-- *Regulators*: CSRC, PBOC, SAFE, NDRC, State Council. Policy signals often matter more than fundamentals in the short run.
-
-*** Trading rules and frictions
-- *T+1*: you cannot sell A-shares bought the same day.
-- *Price limits*: main board ±10%, ChiNext/STAR ±20%, BSE ±30%. ST stocks ±5%.
-- *Lot size*: usually 100 shares.
-- *Short selling*: possible via margin/securities lending, but constrained and often expensive.
-- *IPO regime*: moved from approval-based to registration-based (STAR, ChiNext, BSE, then main board). Still heavy state influence.
-- *Delisting*: historically rare, now increasing, but still not US-like.
-- *Trading suspensions*: historically used to avoid crashes; less common now but still a risk.
-
-*** Investor base
-- *Retail investors*: dominate trading volume (roughly 60–80% depending on period), high turnover, momentum/theme-driven.
-- *Institutions*: public mutual funds, private funds, quant funds, insurance, pensions, National Social Security Fund.
-- *State players*: Central Huijin, China Securities Finance Corp (“national team”) can intervene to stabilize markets.
-- *Foreign investors*: via Stock Connect (Northbound/Southbound), QFII/RQFII. Northbound flow is a watched signal.
-
-*** Market composition and sectors
-- *Indices*: SSE Composite, CSI 300, CSI 500, CSI 1000, ChiNext, STAR 50, Hang Seng, MSCI China.
-- *Heavy weights*: financials (banks, insurance, brokers), industrials, materials, energy, consumer staples (especially liquor), healthcare.
-- *Growth themes*: EVs, batteries, solar, semiconductors, AI, defense, high-dividend SOEs.
-- *Distressed areas*: real estate, local government financing vehicles, some consumer discretionary.
-
-*** Earnings prospects and macro
-- *Macro*: slowing growth, property crisis, local debt overhang, deflationary pressure, weak consumer confidence, export resilience, geopolitical tension.
-- *Policy themes*: “common prosperity,” SOE reform, “Sino-specific valuation” (中特估), high dividend, tech self-sufficiency, stimulus.
-- *Sector outlooks*:
-  - *Banks/SOEs*: cheap, high dividend, but slow growth and hidden credit risk.
-  - *Consumer*: recovery uncertain; premium liquor resilient, mass market under pressure.
-  - *Tech/Semis*: policy support vs. US restrictions; high volatility.
-  - *New energy*: oversupply and price wars in solar/EV, but long-term growth.
-  - *Real estate*: restructuring, high risk, policy-dependent.
-
-*** Is it “gambling” or “rigged”?
-- *Not purely random*: returns show factor structure (size, value, reversal, momentum, quality, low volatility, turnover), policy cycles, liquidity effects, and sentiment cycles.
-- *But structurally disadvantaged for retail*:
-  - Information asymmetry (insiders, state, large funds).
-  - T+1, price limits, shorting constraints create asymmetric payoffs.
-  - IPO underpricing, lockups, insider selling, related-party transactions.
-  - Weak minority shareholder protection, accounting fraud (e.g., Kangmei), earnings management.
-  - Policy intervention and “national team” buying can distort prices.
-  - Market manipulation, “pump and dump,” and theme speculation are common.
-- *Verdict*: it is not a literal casino, but it is a heavily regulated, policy-driven, friction-heavy market where retail often loses. A Bayesian statistician can have an edge, but only with:
-  - Point-in-time data, survivorship-bias-free universes.
-  - Realistic trading rules (T+1, limits, costs, capacity).
-  - Regime-switching models, robust priors, Bayesian model averaging.
-  - Awareness of non-stationarity and policy shocks.
-  - Niche strategies: small-cap quant, event-driven, AH/ETF arbitrage, convertible bonds, statistical arb.
-
----
-
-** next step
-
-If you want, I can outline a concrete research plan: data sources, factor library, backtest engine rules, and a Bayesian framework for regime detection and position sizing.
-
-** 前复权 (qfq) and 后复权 (hfq)                            :fc:
-:PROPERTIES:
-:FC_CREATED: 2026-09-30T08:27:07Z
-:FC_TYPE:  cloze
-:FC_ALGO:  sm2
-:ID:       731d9e85-63d8-45b8-8696-c0c4a0b9557a
-:FC_CLOZE_MAX: 1
-:FC_CLOZE_TYPE: deletion
-:END:
-:REVIEW_DATA:
-| position | ease | box | interval | due                  |
-|----------+------+-----+----------+----------------------|
-|        0 | 2.50 |   4 |    16.05 | 2026-11-02T04:42:56Z |
-|        1 | 2.50 |   4 |    16.21 | 2026-11-02T09:01:12Z |
-:END:
-
-These are *price adjustment methods* for {{dividends, splits, and rights issues}@0}. They remove artificial gaps so charts and returns are continuous.
-
-qfq anchors to the latest, hfq anchors to the {{earliest}@1}.
-
-- *For trading*: use raw prices for orders, limits, and execution.
-- *For charting*: use qfq for clean technical patterns and current price context.
-- *For backtesting/returns*: use hfq or raw + cumulative adjustment factors.
-- *For quant*: store raw prices and 复权因子 (adjustment factors). Compute total returns yourself. This avoids vendor inconsistencies and look-ahead bias.
-- *Pitfalls*: vendors differ on dividend tax, rights issues, and rounding. qfq can even show negative historical prices if cumulative dividends exceed the price.
-
-Never use qfq for long-term return calculations unless you explicitly account for the changing anchor.
-*** 不复权 (raw)
-Actual traded prices. Use for:
-- Order execution, limit prices, actual market microstructure.
-- Volume, spread, tax lots.
-
-*** 前复权 (qfq) — “forward/previous adjustment”
-- *Anchor*: the *latest* price is unchanged (equals raw current price).
-- *Historical prices* are adjusted downward/upward to remove ex-dividend/ex-rights gaps.
-- *Useful for*: technical analysis, chart patterns, current price reference, setting alerts, visual continuity.
-- *Caveat*: qfq history *changes* whenever a new dividend/split occurs, because the anchor is the present. So cached qfq data becomes stale.
-
-*** 后复权 (hfq) — “backward/post adjustment”
-- *Anchor*: the *earliest* price is unchanged.
-- *Later prices* are adjusted upward to reflect cumulative dividends/splits.
-- *Useful for*: backtesting, performance measurement, total return calculation, long-term charts, comparing cumulative returns across stocks.
-- *Caveat*: hfq prices are not real traded prices and are often much higher than raw.
-
-*** Simple example (one cash dividend, D=5)
-Raw: Day0 = 100, Day1 ex = 95, Day2 = 100.
-
-| Day | Raw | qfq | hfq |
-|-----|-----|-----|-----|
-| 0   | 100 | 95  | 100 |
-| 1   | 95  | 95  | 100 |
-| 2   | 100 | 100 | 105.26 |
-
-- qfq removes the drop on Day1; current price stays raw.
-- hfq keeps Day0=100 and scales later prices by the cumulative adjustment factor (assuming dividend reinvestment). The total return from Day0 to Day2 is 5.26% in both qfq and hfq.
-* A-share rules to encode
-
-- A shares can only be purchased in 100-share lots. (=Portfolio.lot_size=)
-- it's T+1: stock bought today can only be sold next day. (=Position.available=, =sell_lots=)
-- main-board stocks have a 10% price change limit.
-
-主板风险警示股票？

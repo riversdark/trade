@@ -19,9 +19,13 @@ class Bar:
 
 type Bars = tuple[Bar, ...]             # ordered oldest first
 
+# one request per symbol -> up to 640 daily OHLCV bars
 KLINE = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+
+# one request -> many symbols' Chinese names and latest quotes
 QUOTE = "https://qt.gtimg.cn/q="
 
+# Q: what's this for?
 HEADERS = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) notes-trade/0.1"}
 
 DEPTH = 10     # rows requested while exploring; endpoint cap is 640
