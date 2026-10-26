@@ -245,7 +245,7 @@ print(f"watchlist: {len(WATCHLIST)} symbols:\n {WATCHLIST}")
 <<watches-list>>
 #+end_src
 
-* source
+* source (10)
 :PROPERTIES:
 :header-args:python: :session source :results output :kernel notes :exports both
 :END:
@@ -542,13 +542,13 @@ This is the only module in the project that opens a socket; the market module ca
 #+begin_src python :tangle source.py :noweb tangle :eval never
 <<source-import>>
 
-<<source-bar>>
-
 <<source-constants>>
+
+<<source-market-code>>
 
 <<source-get>>
 
-<<source-market-code>>
+<<source-bar>>
 
 <<source-parse-bars>>
 
@@ -566,6 +566,15 @@ This is the only module in the project that opens a socket; the market module ca
 - There is no recorded fetch date anywhere, so "when was this snapshot taken" is answerable only from the file's mtime. A =meta= row, or a =fetched.csv=, would make provenance explicit.
 - These examples call the live endpoints when evaluated, so they need network access and the returned rows change over time.
 - Source parsers return the shared =Bar= and =Bars= types; =market.refresh= owns the snapshot format.
+
+there are some discrepencies in the naming and separation of responsibilities of the functions.
+- get -> parse bars -> fetch bars
+- get -> fetch names -> parse names
+
+the different ordering are confusing and ugly.
+
+parse bars: symbol -> market_code + payload -> parse -> bars
+fetch bars: symbol -> market_code -> payload -> parse_bars -> bars
 * market
 :PROPERTIES:
 :header-args:python: :session market :results output :kernel notes :exports both
@@ -1612,9 +1621,13 @@ def lot_book(fills: tuple[Fill, ...]) -> dict[str, tuple[Lot, ...]]:
     return {symbol: tuple(lots) for symbol, lots in book.items() if lots}
 #+end_src
 
-#+RESULTS: book-lot-book
+lot_book processes each fill in order and maintains a per-symbol “open lot” book:
 
-Symbols whose lots have all been sold are dropped, so the book is exactly the set of open positions -- there is no "closed but remembered" state to filter out later.
+- A *BUY* appends a new open =Lot(date, quantity, price)= for that symbol.
+- A *SELL* does not append a lot. Instead it calls =sell_lots(...)= to consume existing lots FIFO for that symbol, then *replaces* the symbol’s list with the remaining lots.
+- At the end it converts each symbol’s remaining list of lots to a tuple, and removes symbols with no remaining lots.
+
+The =append= call is applied to the list stored in =book= for =fill.symbol= — not to =book= itself.
 
 #+begin_src python
 # The grown ledger's fills: both names keep their remaining lots.

@@ -6,19 +6,6 @@ import urllib.request
 from datetime import date
 from dataclasses import dataclass
 
-@dataclass(frozen=True)
-class Bar:
-    """One day's OHLCV observation for one instrument."""
-
-    date: date
-    open: float
-    high: float
-    low: float
-    close: float
-    volume: int
-
-type Bars = tuple[Bar, ...]             # ordered oldest first
-
 # one request per symbol -> up to 640 daily OHLCV bars
 KLINE = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
 
@@ -32,6 +19,14 @@ DEPTH = 10     # rows requested while exploring; endpoint cap is 640
 DELAY = 0.35    # Seconds between symbol requests
 BATCH = 50      # symbols per quote request
 RETRIES = 3
+
+def market_code(symbol: str) -> str:
+    """A-share symbol -> Tencent's market-prefixed code."""
+    if symbol.startswith(("6", "9")):
+        return f"sh{symbol}"
+    if symbol.startswith(("4", "8")):
+        return f"bj{symbol}"
+    return f"sz{symbol}"
 
 def get(url: str, *, encoding: str = "utf-8") -> str:
     """One GET, retried, so a dropped connection is not a data gap."""
@@ -47,13 +42,18 @@ def get(url: str, *, encoding: str = "utf-8") -> str:
             time.sleep(DELAY * 2 ** attempt)
     raise AssertionError("unreachable")
 
-def market_code(symbol: str) -> str:
-    """A-share symbol -> Tencent's market-prefixed code."""
-    if symbol.startswith(("6", "9")):
-        return f"sh{symbol}"
-    if symbol.startswith(("4", "8")):
-        return f"bj{symbol}"
-    return f"sz{symbol}"
+@dataclass(frozen=True)
+class Bar:
+    """One day's OHLCV observation for one instrument."""
+
+    date: date
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: int
+
+type Bars = tuple[Bar, ...]             # ordered oldest first
 
 def parse_bars(payload: str, symbol: str, adjust: str) -> Bars:
     """Decode one fqkline response into market bars, oldest first."""
