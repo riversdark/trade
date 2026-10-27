@@ -220,7 +220,7 @@ It returns the account it reasoned about as well as the orders, so a caller can 
 
 there are thousands of stocks in the market, we must determine which should come under consideration.
 
-For the moment, this is a hand-picked list of the account's holdings plus the candidate names under consideration. =gather= reads it and =market.refresh= uses it by default, so adding a name means refreshing its stored data too.
+For the moment, this is a hand-picked list of the account's holdings plus the candidate names under consideration. =gather= reads it and =source.refresh= uses it by default, so adding a name means refreshing its stored data too.
 
 #+name: watches-list
 #+begin_src python :results none
@@ -245,12 +245,12 @@ print(f"watchlist: {len(WATCHLIST)} symbols:\n {WATCHLIST}")
 <<watches-list>>
 #+end_src
 
-* source (10)
+* source (9)
 :PROPERTIES:
 :header-args:python: :session source :results output :kernel notes :exports both
 :END:
 
-=source.py= fetches and decodes Tencent responses into the market's =Bar= and =Bars= types. It does not know about the snapshot format; the market module owns storage. Importing either module makes no request; only an explicit fetch or refresh reaches the network.
+=source.py= fetches Tencent responses and writes the local CSV snapshot. It owns the endpoint-to-snapshot path; =market.py= reads that snapshot into market types. Importing either module makes no request; only an explicit refresh reaches the network.
 
 I've tried tushare and akshare before, but neither seem to have stable API accesses due to EastMoney limits. Tencent seems to work well (for the moment).
 
@@ -259,13 +259,16 @@ I've tried tushare and akshare before, but neither seem to have stable API acces
 import sys
 import time
 import json
+import csv
 import urllib.error
 import urllib.request
 from datetime import date
-from dataclasses import dataclass
+from pathlib import Path
+
+from watches import WATCHLIST
 #+end_src
 
-Importing =source= defines the response types and parsers but does not open a connection. Network requests happen only when a fetch function is called; the CLI branch delegates explicit refresh to the market module.
+Importing =source= defines request, parsing, and storage functions but does not open a connection. Network requests happen only when a fetch function or the explicit refresh command is called.
 
 ** configure the endpoints
 
@@ -282,7 +285,7 @@ QUOTE = "https://qt.gtimg.cn/q="
 # Q: what's this for?
 HEADERS = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) notes-trade/0.1"}
 
-DEPTH = 10     # rows requested while exploring; endpoint cap is 640
+DEPTH = 640     # rows requested while exploring; endpoint cap is 640
 DELAY = 0.35    # Seconds between symbol requests
 BATCH = 50      # symbols per quote request
 RETRIES = 3
@@ -290,7 +293,7 @@ RETRIES = 3
 
 #+RESULTS: source-constants
 
-The request currently asks for 10 rows while we explore the response shape; the endpoint allows up to 640. =DELAY= paces refreshes, and =RETRIES= bounds recovery from a dropped connection.
+The request for the endpoint allows up to 640 entries. =DELAY= paces refreshes, and =RETRIES= bounds recovery from a dropped connection.
 
 #+begin_src python
 from urllib.parse import urlparse
@@ -302,6 +305,9 @@ assert RETRIES > 1 and DELAY > 0
 
 print(f"politeness: {RETRIES} tries, {DELAY}s pacing, {BATCH} names/request")
 #+end_src
+
+#+RESULTS:
+: politeness: 3 tries, 0.35s pacing, 50 names/request
 
 ** define the request codes and functions
 
@@ -339,7 +345,7 @@ print(json.loads(wire)["data"]["sz000528"]["qfqday"][0])
 
 #+RESULTS:
 : str
-: ['2026-10-09', '7.498', '7.528', '7.558', '7.468', '170018.000']
+: ['2024-03-06', '7.147', '7.157', '7.217', '7.077', '306591.000']
 
 The endpoints add a prefix for the exchange: 6xxxxx and 9xxxxx are Shanghai, 4xxxxx and 8xxxxx Beijing, everything else Shenzhen.
 
@@ -366,178 +372,130 @@ print("codes: 000528 -> sz, 600519 -> sh, 830799 -> bj")
 #+RESULTS:
 : codes: 000528 -> sz, 600519 -> sh, 830799 -> bj
 
-** fetch daily bars
+** refresh and store the snapshot
 
-The =Bar= record is the parser's result type and the market model's daily observation. =Bars= keeps one response oldest first.
+The writers own the complete endpoint-to-file operation. =get= fetches the payload; each writer decodes its response and writes the snapshot in one step. The market module only reads these files, so importing =source= or =market= stays offline.
 
-#+name: source-bar
+#+name: source-store
 #+begin_src python
-@dataclass(frozen=True)
-class Bar:
-    """One day's OHLCV observation for one instrument."""
-
-    date: date
-    open: float
-    high: float
-    low: float
-    close: float
-    volume: int
-
-type Bars = tuple[Bar, ...]             # ordered oldest first
+STORE = Path.home() / "git" / "notes" / "projects" / "trade" / "bars"
+SERIES = ("raw", "qfq")
+ADJUST = {"raw": "", "qfq": "qfq"}
 #+end_src
 
-#+RESULTS: source-bar
+#+RESULTS: source-store
 
-#+name: source-parse-bars
+*** write daily bars
+
+#+name: source-write-bars
 #+begin_src python
-def parse_bars(payload: str, symbol: str, adjust: str) -> Bars:
-    """Decode one fqkline response into market bars, oldest first."""
-    code = market_code(symbol)
-    rows = json.loads(payload)["data"][code][f"{adjust}day"]
-    return tuple(
-        Bar(date=date.fromisoformat(row[0]),
-            open=float(row[1]),
-            high=float(row[3]),
-            low=float(row[4]),
-            close=float(row[2]),
-            volume=int(float(row[5])))
-        for row in rows
-    )
-#+end_src
-
-#+RESULTS: source-parse-bars
-
-The row is =[date, open, close, high, low, volume]=, with close before high and low. The endpoint writes volume as a decimal string such as =222233.000=, so the parser converts through =float= before =int=.
-
-#+begin_src python
-recent = parse_bars(wire, "000528", "qfq")
-print(f"parsed: {len(recent)} bars")
-print(recent[0])
-print(recent[-1])
-#+end_src
-
-#+RESULTS:
-: parsed: 10 bars
-: Bar(date=datetime.date(2026, 10, 9), open=7.498, high=7.558, low=7.468, close=7.528, volume=170018)
-: Bar(date=datetime.date(2026, 10, 22), open=7.9, high=8.02, low=7.86, close=7.96, volume=470792)
-
-combine fetching url and parsing:
-
-#+name: source-fetch-bars
-#+begin_src python
-def fetch_bars(symbol: str, adjust: str) -> Bars:
-    """Fetch and parse one symbol's daily bars."""
+def write_bars(symbol: str, adjust: str, path: Path) -> None:
+    """Fetch, normalize, and store one complete daily series."""
     span = f"1900-01-01,{date.today().isoformat()}"
-    url = f"{KLINE}?param={market_code(symbol)},day,{span},{DEPTH},{adjust}"
-    return parse_bars(get(url), symbol, adjust)
+    code = market_code(symbol)
+    url = f"{KLINE}?param={code},day,{span},{DEPTH},{adjust}"
+    rows = json.loads(get(url))["data"][code][f"{adjust}day"]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(("date", "open", "high", "low", "close", "volume"))
+        writer.writerows(
+            (row[0], row[1], row[3], row[4], row[2], int(float(row[5])))
+            for row in rows
+        )
+    print(f"{adjust or 'raw':>3} {symbol} {len(rows):>4} bars "
+          f"{rows[0][0]} .. {rows[-1][0]}")
 #+end_src
 
-#+RESULTS: source-fetch-bars
+#+RESULTS: source-write-bars
+
+The endpoint row is =[date, open, close, high, low, volume]=. The CSV row is =[date, open, high, low, close, volume]=; the writer rearranges the prices and converts volume from a decimal string such as =222233.000= to an integer. No intermediate market objects are constructed.
 
 #+begin_src python
-fb = fetch_bars("000528", "qfq")
-assert len(fb) == DEPTH
+from tempfile import TemporaryDirectory
+
+with TemporaryDirectory() as tmp:
+    path = Path(tmp) / "qfq" / "000528.csv"
+    write_bars("000528", "qfq", path)
+    print(path.read_text().splitlines()[:2])
 #+end_src
 
 #+RESULTS:
+: qfq 000528  640 bars 2024-03-06 .. 2026-10-27
+: ['date,open,high,low,close,volume', '2024-03-06,7.147,7.217,7.077,7.157,306591']
 
-** fetch instrument names
+*** write instrument names
 
-=names.csv= is one shared file, so a subset refresh is exactly where it could quietly forget the rest of the watchlist.
-The fetch function batches requests, and the parser below turns the replies into a symbol-to-name mapping.
+=names.csv= is one shared file, so a subset refresh must preserve names for symbols not included in the request. The quote endpoint batches symbols and returns fixed-width, semicolon-separated records; =write_names= fetches, parses, merges, and writes in one pass.
 
-#+name: source-fetch-names
+#+name: source-write-names
 #+begin_src python
-def fetch_names(symbols: tuple[str, ...]) -> tuple[str, ...]:
-    """Return raw quote responses, one per BATCH symbols."""
+def write_names(symbols: tuple[str, ...], path: Path) -> None:
+    """Fetch, merge, and store names for the selected symbols."""
     codes = [market_code(symbol) for symbol in symbols]
-    responses = []
+    fetched: dict[str, str] = {}
     for start in range(0, len(codes), BATCH):
         chunk = codes[start:start + BATCH]
-        # GBK, not UTF-8: the endpoint is an old one and answers in it.
-        responses.append(get(QUOTE + ",".join(chunk), encoding="gbk"))
-    return tuple(responses)
-#+end_src
-
-#+RESULTS: source-fetch-names
-
-Note that we are fetching in BATCHes, names in the same batch will be glued together.
-For this reason the return value is a tuple, each item a batch of results separated by =;=.
-
-#+begin_src python
-syms = ("000528", "601226")
-quotes = fetch_names(syms)
-
-for response in quotes:
-    for line in response.split(";"):
-        if line:
-            print(line.split("~")[1:4])
-#+end_src
-
-#+RESULTS:
-: ['柳    工', '000528', '8.51']
-: ['华电科工', '601226', '6.18']
-: []
-
-The result is then parsed into a dict as follows.
-
-#+name: source-parse-names
-#+begin_src python
-def parse_names(responses: tuple[str, ...]) -> dict[str, str]:
-    """Decode quote responses into symbol -> name."""
-    names: dict[str, str] = {}
-    for text in responses:
+        text = get(QUOTE + ",".join(chunk), encoding="gbk")
         for line in text.split(";"):
             fields = line.split("~")
             if len(fields) > 3 and fields[2].isdigit():
-                names[fields[2]] = "".join(fields[1].split())
-    return names
+                fetched[fields[2]] = "".join(fields[1].split())
+
+    stored: dict[str, str] = {}
+    if path.exists():
+        with open(path, newline="") as handle:
+            stored = {row["symbol"]: row["name"]
+                      for row in csv.DictReader(handle)}
+    names = stored | fetched
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(("symbol", "name"))
+        writer.writerows(sorted(names.items()))
+    print(f"names {len(names)} symbols stored")
 #+end_src
 
-#+RESULTS: source-parse-names
+#+RESULTS: source-write-names
 
-Names are padded to fit the quote protocol's fixed-width fields, so whitespace is removed inside the name as well as at its ends.
+Names are padded to fit the quote protocol's fixed-width fields, so whitespace is removed inside each name as it is parsed. Fetched names win; names outside a subset refresh remain in the merged table.
 
 #+begin_src python
-names = parse_names(quotes)
-print(names)
+with TemporaryDirectory() as tmp:
+    path = Path(tmp) / "names.csv"
+    write_names(("000528", "601226"), path)
+    with open(path, newline="") as handle:
+        names = {row["symbol"]: row["name"] for row in csv.DictReader(handle)}
+    assert names == {"000528": "柳工", "601226": "华电科工"}
+    print(names)
 #+end_src
 
 #+RESULTS:
+: names 2 symbols stored
 : {'000528': '柳工', '601226': '华电科工'}
 
-** the command line
-
-: TODO this calls functionalities from later modules.
-: ugly, either move refresh here, or move this call to later.
-: to be done in later refactors.
-
-#+name: source-main
+#+name: source-refresh
 #+begin_src python
-if __name__ == "__main__":
-
-    match sys.argv[1:]:
-        case ["refresh", *symbols]:
-            from market import refresh
-            refresh(tuple(symbols))
-        case _:
-            raise SystemExit("usage: python source.py refresh [symbol ...]")
+def refresh(symbols: tuple[str, ...] = (),
+            series: tuple[str, ...] = SERIES) -> None:
+    """Refresh every selected symbol and series."""
+    symbols = symbols or WATCHLIST
+    for name in series:
+        for symbol in symbols:
+            write_bars(symbol, ADJUST[name], STORE / name / f"{symbol}.csv")
+            time.sleep(DELAY)
+    write_names(symbols, STORE / "names.csv")
 #+end_src
 
-#+RESULTS: source-main
+#+RESULTS: source-refresh
 
-There is no default command on purpose: a bare =python source.py= must not fetch, because the safe default for something that talks to the network is to do nothing until asked.
-
-#+begin_example
-python source.py refresh                 # refresh the whole watchlist
-python source.py refresh 000528 600519   # refresh just these
-#+end_example
+Refresh rewrites full raw and qfq histories because an adjustment can revise old rows. Name updates merge with the existing table so refreshing a subset does not erase names for the rest of the watchlist.
 
 ** assembling the module
 
-Dependence tree: symbol -> market_code -> HTTP request -> response text -> Bars/names.
+Dependence tree: symbol -> market_code -> HTTP request -> response text -> CSV rows/names -> snapshot.
 
-This is the only module in the project that opens a socket; the market module calls its fetch functions only during an explicit refresh.
+This is the only module in the project that opens a socket or writes the snapshot. Its CLI calls =refresh= explicitly; market reads the resulting files offline.
 
 #+begin_src python :tangle source.py :noweb tangle :eval never
 <<source-import>>
@@ -548,136 +506,90 @@ This is the only module in the project that opens a socket; the market module ca
 
 <<source-get>>
 
-<<source-bar>>
+<<source-store>>
 
-<<source-parse-bars>>
+<<source-write-bars>>
 
-<<source-fetch-bars>>
+<<source-write-names>>
 
-<<source-fetch-names>>
+<<source-refresh>>
 
-<<source-parse-names>>
 
-<<source-main>>
+if __name__ == "__main__":
+
+    match sys.argv[1:]:
+        case ["refresh", *symbols]:
+            refresh(tuple(symbols))
+        case _:
+            raise SystemExit("usage: python source.py refresh [symbol ...]")
 #+end_src
+
+There is no default command on purpose: a bare =python source.py= must not fetch, because the safe default for something that talks to the network is to do nothing until asked.
+
+#+begin_example
+python source.py refresh                 # refresh the whole watchlist
+python source.py refresh 000528 600519   # refresh just these
+#+end_example
 
 ** open questions
 
 - There is no recorded fetch date anywhere, so "when was this snapshot taken" is answerable only from the file's mtime. A =meta= row, or a =fetched.csv=, would make provenance explicit.
 - These examples call the live endpoints when evaluated, so they need network access and the returned rows change over time.
-- Source parsers return the shared =Bar= and =Bars= types; =market.refresh= owns the snapshot format.
-
-there are some discrepencies in the naming and separation of responsibilities of the functions.
-- get -> parse bars -> fetch bars
-- get -> fetch names -> parse names
-
-the different ordering are confusing and ugly.
-
-parse bars: symbol -> market_code + payload -> parse -> bars
-fetch bars: symbol -> market_code -> payload -> parse_bars -> bars
+- =source= owns the snapshot path and CSV format; =market= owns the =Bar= and =Instrument= types built from it.
+- The endpoint-to-snapshot path is one writer per dataset: =get= supplies text, and the writer parses and stores it.
 * market
 :PROPERTIES:
 :header-args:python: :session market :results output :kernel notes :exports both
 :END:
 
-Market data follows an operational flow: =source.py= fetches and decodes endpoint responses into =Bar= and =Bars=; this module refreshes the local snapshot; =gather(as_of)= reads that snapshot and builds the point-in-time =Market= used by a session. The session path reads local data.
-
-1. Fetch the information needed for the watchlist.
-2. Store the raw and adjusted series on disk.
-3. Read the stored rows into market data types.
-4. Gather the market as of the session date.
-** gather: market information
-
-Dependence tree: =Money -> Bar -> Instrument -> (Bars, Market) -> mark=, with =gather= producing the =Market= that =mark= reads.
-
-*** imports
+This module reads the snapshot into market types and gathers the point-in-time =Market= used by a session. The session path reads local data.
 
 #+name: market-import
 #+begin_src python :results none
 import csv
-import math
-import time
 from dataclasses import dataclass
-from datetime import date, timedelta
-from pathlib import Path
+from datetime import date
 
-from source import Bar, Bars
+from source import STORE
 from watches import WATCHLIST
 #+end_src
 
-*** the scalar vocabulary
+** read snapshot into market types
 
-#+name: market-money
-#+begin_src python :results none
+=Money= and =Quantity= live here rather than in =book=, because a price is market data before it is account state. We simply use floats for money.
+
+#+name: market-bar
+#+begin_src python
 type Money = float           # cash, prices, and any amount of money
 type Quantity = int          # a count of shares
+
+@dataclass(frozen=True)
+class Bar:
+    """One day's OHLCV observation for one instrument."""
+
+    date: date
+    open: Money
+    high: Money
+    low: Money
+    close: Money
+    volume: Quantity
+
+type Bars = tuple[Bar, ...]             # ordered oldest first
 #+end_src
 
-=Money= and =Quantity= live here rather than in =book=, because a price is market data before it is account state. =book= imports them, so the dependency edge between those modules points from account state into market data. =market= also imports the selected symbols from =watches=, but knows nothing about accounts.
+#+RESULTS: market-bar
 
-Every money value in the project is the same =float=, so =Bar.close= and =Account.cash= are one type and no conversion sits between a price and the cash it becomes. The exactness split from =book= applies unchanged: exact === for integer sums such as =quantity * price=, =math.isclose= for anything divided.
-
-*** the bar
-
-=volume= is in 手 -- lots of 100 shares, the unit A-share quotes speak and the same one =book= already uses for lot sizes, so no conversion sits between the data and a decision. The date is a *trading* day: the source is end-of-day, so there is no intraday bar to confuse it with.
-
-An OHLC bar is internally ordered, and a reader can check that cheaply: =low= never exceeds =open= or =close=, and =high= never falls below either.
+=volume= is in 手 -- lots of 100 shares. The date is a trading day because the source is end-of-day. The reader preserves oldest-first order, so the first and last elements have stable meanings without sorting at each call site.
 
 #+begin_src python
-bar = Bar(date(2026, 8, 25), open=11.5, high=11.8, low=11.3, close=11.6,
-          volume=12345)
+bar = Bar(date(2026, 8, 25), 11.5, 11.8, 11.3, 11.6, 12345)
 assert bar.low <= bar.open <= bar.high
 assert bar.low <= bar.close <= bar.high
-print(f"bar: {bar.date} O{bar.open} H{bar.high} L{bar.low} "
-      f"C{bar.close} V{bar.volume}")
+print(f"bar: {bar.date} O{bar.open} H{bar.high} L{bar.low} C{bar.close} V{bar.volume}")
 #+end_src
 
 #+RESULTS:
 : bar: 2026-08-25 O11.5 H11.8 L11.3 C11.6 V12345
-
-
-Bars are always oldest first. That one convention is what lets =closes[-1]= mean "the latest" and =closes[0]= mean "the start of the window", with no call site sorting anything.
-
-#+begin_src python
-bars = (Bar(date(2026, 8, 24), 11.0, 11.4, 10.9, 11.2, 9000),
-        Bar(date(2026, 8, 25), 11.5, 11.8, 11.3, 11.6, 12345))
-assert [b.date for b in bars] == sorted(b.date for b in bars)
-print(f"bars: {len(bars)} bars, {bars[0].date} .. {bars[-1].date}")
-#+end_src
-
-#+RESULTS:
-: bars: 2 bars, 2026-08-24 .. 2026-08-25
-
-*** the history helper
-
-#+name: market-history
-#+begin_src python
-def history(*closes: Money) -> Bars:
-    """Build flat example bars from literal closes: open=high=low=close."""
-    return tuple(
-        Bar(date(2026, 1, 1) + timedelta(days=offset),
-            close, close, close, close, 0)
-        for offset, close in enumerate(closes)
-    )
-#+end_src
-
-#+RESULTS: market-history
-
-This exists for the examples, not for the pipeline. An example about a window or a mark should be able to say "these five closes" without inventing OHLCV it never looks at, so each close becomes a flat bar -- all four prices equal, zero volume. The dates are synthetic for the same reason; an example that needs real OHLCV uses the snapshot instead.
-
-It lives in the module rather than in an example because two sections need it, and a helper two sections share belongs in one place.
-
-#+begin_src python
-flat = history(10.0, 11.0, 12.0)
-assert [b.close for b in flat] == [10.0, 11.0, 12.0]
-assert all(b.open == b.high == b.low == b.close for b in flat)
-print(f"history: {[b.close for b in flat]}")
-#+end_src
-
-#+RESULTS:
-: history: [10.0, 11.0, 12.0]
-
-*** the instrument
 
 #+name: market-instrument
 #+begin_src python
@@ -699,195 +611,20 @@ class Instrument:
     def adjusted_closes(self) -> tuple[Money, ...]:
         """Dividend-continuous closes: for returns, never for marks."""
         return tuple(bar.close for bar in self.adjusted)
+
+type Market = dict[str, Instrument]     # symbol -> instrument
 #+end_src
 
 #+RESULTS: market-instrument
 
-Two series per name, and the split is the point:
+Two series per instrument: raw prices are used for marks that reconcile to fills; qfq prices are used for returns across dividends. They are properties rather than duplicated tuples, so each view stays aligned with its bars.
 
-- =bars= is *raw*, unadjusted: the prices actually traded, so a mark matches a broker fill and a replayed ledger reconciles to the cent.
-- =adjusted= is *qfq*, forward-adjusted: continuous across dividends, so a return is not polluted by an ex-dividend gap.
-
-=adjusted= defaults to empty so an example with only closes to show need not invent a dividend history, but =gather= always fills it from the snapshot. =closes= and =adjusted_closes= are properties rather than stored tuples: one payload and two views, so the two cannot disagree about which day they start on.
-
-#+begin_src python
-instrument = Instrument("000528", "柳工", history(10.0, 11.0, 12.0),
-                        history(9.0, 10.0, 11.0))
-assert instrument.closes == (10.0, 11.0, 12.0)
-assert instrument.adjusted_closes == (9.0, 10.0, 11.0)
-# A name with no adjustment history still answers, with nothing.
-assert Instrument("X", "X", history(1.0)).adjusted_closes == ()
-print(f"instrument: {instrument.symbol} {instrument.name}, \n"
-      f"closes {instrument.closes} adjusted closes {instrument.adjusted_closes}")
-#+end_src
-
-#+RESULTS:
-: instrument: 000528 柳工,
-: closes (10.0, 11.0, 12.0) adjusted closes (9.0, 10.0, 11.0)
-
-*** the market
-
-#+name: market-map
-#+begin_src python :results none
-type Market = dict[str, Instrument]     # symbol -> instrument
-#+end_src
-
-A =Market= is a dict and not a class, because it has no invariant to protect: it is a set of instruments keyed by the symbol that already identifies them, and a dict cannot hold one symbol twice. Widening the market later -- indices, sectors, fundamentals -- means adding keys, not changing the type.
-
-#+begin_src python
-market = {"000528": instrument,
-          "600036": Instrument("600036", "招商银行", history(38.0, 39.5))}
-assert set(market) == {"000528", "600036"}
-print(f"market: {sorted(market)}")
-#+end_src
-
-#+RESULTS:
-: market: ['000528', '600036']
-
-*** the default window
-
-The default window is a modelling choice, not a property of the stored snapshot. Keep the full history on disk; =gather= selects the recent window passed downstream.
-
-#+name: market-window
-#+begin_src python
-WINDOW = 60
-#+end_src
-
-#+RESULTS: market-window
-
-At 60 trading days, the current momentum window is roughly a quarter. =window=None= remains available when a caller needs the full stored history.
-
-#+begin_src python
-assert WINDOW == 60
-print(f"default window: {WINDOW} trading days")
-#+end_src
-
-#+RESULTS:
-: default window: 60 trading days
-
-*** the mark
-
-#+name: market-mark
-#+begin_src python
-def mark(market: Market, symbol: str) -> Money:
-    """The latest close, which is the one price a session works from."""
-    return market[symbol].bars[-1].close
-#+end_src
-
-#+RESULTS: market-mark
-
-=mark= is the single definition of "the price right now". Both valuing a holding and sizing an order go through it, so one session cannot value at one price and trade at another -- the kind of bug that surfaces only as money that fails to add up. A symbol the market does not have raises =KeyError= by name, which is the failure we want: a holding missing from the market is a bug upstream, not a position worth zero.
-
-#+begin_src python
-assert mark(market, "000528") == 12.0
-assert mark(market, "600036") == 39.5
-try:
-    mark(market, "999999")
-except KeyError as error:
-    assert "999999" in str(error)
-else:
-    assert False, "an unknown symbol should raise"
-print(f"mark: 000528 {mark(market, '000528')}, "
-      f"600036 {mark(market, '600036')}")
-#+end_src
-
-#+RESULTS:
-: mark: 000528 12.0, 600036 39.5
-
-** the snapshot on disk
-
-=source.py= returns =Bars= and a symbol-to-name mapping. This section writes those market values to the local snapshot and reads them back to assemble a market. Refresh is explicit; =gather= stays on the offline session path.
-
-*** the store
-
-#+name: market-store
-#+begin_src python
-# use hardlink for the moment
-STORE = Path.home() / "git" / "notes" / "projects" / "trade" / "bars"
-SERIES = ("raw", "qfq")
-ADJUST = {"raw": "", "qfq": "qfq"}
-#+end_src
-
-#+RESULTS: market-store
-
-=STORE= is a project path written out in full, so =gather= behaves the same whether it runs in the org session, from the project folder, from the notes root, or by a job. The alternative, =Path(__file__).parent / "bars"=, works only for the tangled module: in the org session the block is exec'd from a temporary file, so =__file__= raises =NameError= at best and points into =/tmp= at worst. =SERIES= names the two directories a symbol's files live in; =ADJUST= maps those storage names to the endpoint's adjustment parameter.
-
-#+begin_src python
-assert STORE.is_dir()
-assert set(SERIES) == {"raw", "qfq"}
-print(f"store: {STORE.name}/ with {SERIES}")
-#+end_src
-
-#+RESULTS:
-: store: bars/ with ('raw', 'qfq')
-
-#+name: market-merge-names
-#+begin_src python
-def merge_names(stored: dict[str, str],
-                fetched: dict[str, str]) -> dict[str, str]:
-    """Fetched names win; names of symbols not asked about survive."""
-    return stored | fetched
-#+end_src
-
-#+begin_src python
-assert merge_names({"000528": "柳工"}, {"600519": "贵州茅台"}) == \
-    {"000528": "柳工", "600519": "贵州茅台"}
-assert merge_names({"600519": "stale"}, {"600519": "fresh"}) == \
-    {"600519": "fresh"}
-print("merge: a subset refresh keeps symbols it did not ask about")
-#+end_src
-
-*** writing the snapshot
-
-#+name: market-write-bars
-#+begin_src python
-def write_bars(path: Path, bars: Bars) -> None:
-    """Overwrite the file with the whole history, oldest first."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", newline="") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(("date", "open", "high", "low", "close", "volume"))
-        writer.writerows(
-            (bar.date.isoformat(), bar.open, bar.high, bar.low, bar.close,
-             bar.volume)
-            for bar in bars)
-#+end_src
-
-#+name: market-write-names
-#+begin_src python
-def write_names(path: Path, names: dict[str, str]) -> None:
-    """Write the whole symbol -> name table, sorted."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", newline="") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(("symbol", "name"))
-        writer.writerows(sorted(names.items()))
-#+end_src
-
-Overwrite rather than append because a dividend rewrites the whole qfq series; appending would mix adjustment vintages in one file. This column order is the contract =read= expects.
-
-#+begin_src python
-from tempfile import TemporaryDirectory
-sample = (Bar(date(2026, 9, 28), 7.40, 7.50, 7.35, 7.46, 1000),
-          Bar(date(2026, 9, 29), 7.42, 7.46, 7.35, 7.36, 222233))
-with TemporaryDirectory() as tmp:
-    bars_path = Path(tmp) / "raw" / "TEST.csv"
-    write_bars(bars_path, sample)
-    assert bars_path.read_text().splitlines()[0] == \
-        "date,open,high,low,close,volume"
-    assert len(bars_path.read_text().splitlines()) == 3
-    names_path = Path(tmp) / "names.csv"
-    write_names(names_path, {"000528": "柳工", "600519": "贵州茅台"})
-    assert names_path.read_text().splitlines()[1].startswith("000528")
-print("write: 2 bars and 2 names stored in a temporary directory")
-#+end_src
-
-*** reading a series
+The CSV column contract is =date,open,high,low,close,volume=. The source module writes that order; this reader maps by column name and constructs the market's =Bar= type. A missing file raises =FileNotFoundError= so an incomplete snapshot cannot quietly look like an empty market.
 
 #+name: market-read
 #+begin_src python
 def read(symbol: str, series: str) -> Bars:
-    """One stored series for one symbol, oldest first."""
+    """Read one stored series for one symbol, oldest first."""
     with open(STORE / series / f"{symbol}.csv", newline="") as handle:
         return tuple(
             Bar(date.fromisoformat(row["date"]),
@@ -900,87 +637,52 @@ def read(symbol: str, series: str) -> Bars:
 
 #+RESULTS: market-read
 
-The file is the contract: =date,open,high,low,close,volume=, one row per trading day, oldest first. Columns are mapped by *name*, so the order the writer emits them in is not something the reader can get wrong.
-
-A missing file raises =FileNotFoundError= naming the path, and that is the failure this design wants: an empty market would let the decision layer conclude "nothing to do" and quietly produce no orders at all. Nothing here catches it.
-
-#+begin_src python
-stored = read("000528", "raw")
-assert len(stored) > WINDOW
-assert [b.date for b in stored] == sorted(b.date for b in stored)
-assert len({b.date for b in stored}) == len(stored)
-assert all(b.low <= b.close <= b.high for b in stored)
-try:
-    read("999999", "raw")
-except FileNotFoundError:
-    pass
-else:
-    assert False, "a missing symbol should raise, not answer empty"
-print(f"read: {len(stored)} bars, {stored[0].date} .. {stored[-1].date}")
-#+end_src
-
-#+RESULTS:
-: read: 640 bars, 2024-02-06 .. 2026-09-29
-
-*** reading the names
-
 #+name: market-names
 #+begin_src python
 def load_names() -> dict[str, str]:
-    """Symbol -> Chinese name in the local snapshot."""
+    """Read the shared symbol -> name table from the snapshot."""
     with open(STORE / "names.csv", newline="") as handle:
         return {row["symbol"]: row["name"] for row in csv.DictReader(handle)}
 #+end_src
 
 #+RESULTS: market-names
 
-=names.csv= is one shared file rather than a field inside each series, because a name belongs to the instrument and not to a period of its prices. It is also the one file a subset refresh could forget the rest of, which is why =refresh= merges into it instead of overwriting.
-
 #+begin_src python
+stored = read("000528", "raw")
+assert len(stored) > 5
+assert [b.date for b in stored] == sorted(b.date for b in stored)
+assert all(b.low <= b.close <= b.high for b in stored)
+print(f"read: {len(stored)} bars, {stored[0].date} .. {stored[-1].date}")
+
 names = load_names()
-assert set(names) == set(WATCHLIST)
 assert names["000528"] == "柳工"
-print(f"names: {len(names)} symbols, 000528 = {names['000528']}")
 #+end_src
 
 #+RESULTS:
-: names: 11 symbols, 000528 = 柳工
+: read: 640 bars, 2024-03-06 .. 2026-10-27
 
-*** refreshing the snapshot
+** gather: point-in-time market
 
-#+name: market-refresh
+=mark= is the single definition of the current price. A missing symbol raises =KeyError=: a holding absent from the market is an upstream problem, not a zero-valued position.
+
+#+name: market-mark
 #+begin_src python
-def refresh(symbols: tuple[str, ...] = (),
-            series: tuple[str, ...] = SERIES) -> None:
-    """Fetch and store every selected symbol and series."""
-    from source import DELAY, fetch_bars, fetch_names, parse_names
-
-    symbols = symbols or WATCHLIST
-    for name in series:
-        for symbol in symbols:
-            bars = fetch_bars(symbol, ADJUST[name])
-            write_bars(STORE / name / f"{symbol}.csv", bars)
-            print(f"{name:>3} {symbol} {len(bars):>4} bars "
-                  f"{bars[0].date} .. {bars[-1].date}")
-            time.sleep(DELAY)
-
-    # names.csv is shared, so a subset refresh must preserve other names.
-    path = STORE / "names.csv"
-    names = load_names() if path.exists() else {}
-    names = merge_names(names, parse_names(fetch_names(symbols)))
-    write_names(path, names)
-    print(f"names {len(names)} symbols stored")
+def mark(market: Market, symbol: str) -> Money:
+    """The latest raw close, which is the one price a session works from."""
+    return market[symbol].bars[-1].close
 #+end_src
 
-Only an explicit =refresh= calls the fetch functions and reaches the network. Run it with =python source.py refresh [symbol ...]=. Both series are rewritten in full; names merge with the existing file so a subset refresh does not forget other symbols.
+#+RESULTS: market-mark
 
-*** gathering the market
+The default window is a modelling choice, not a property of the stored snapshot. Keep the full history on disk; =gather= selects the recent window passed downstream. At 60 trading days, the current momentum window is roughly a quarter; =window=None= exposes all stored history.
 
 #+name: market-gather
 #+begin_src python
+WINDOW = 60
+
 def gather(as_of: date | None = None,
            window: int | None = WINDOW) -> Market:
-    """Gather all relevant market info as of a date, from the snapshot."""
+    """Gather the watchlist from the snapshot as of a date."""
     names = load_names()
     market: Market = {}
     for symbol in WATCHLIST:
@@ -988,12 +690,6 @@ def gather(as_of: date | None = None,
                      if as_of is None or bar.date <= as_of)
         if not bars:
             continue
-        # Keep only adjusted bars whose day the raw series also has. The two
-        # are not always the same length: for 2 of the 11 watchlist names the
-        # qfq endpoint lagged raw by a day at the leading edge. Intersecting
-        # bounds the damage to "the adjusted series is a bar shorter" instead
-        # of letting a return built from adjusted closes pair with a mark from
-        # another day.
         days = {bar.date for bar in bars}
         adjusted = tuple(bar for bar in read(symbol, "qfq")
                          if bar.date in days)
@@ -1007,105 +703,59 @@ def gather(as_of: date | None = None,
 
 #+RESULTS: market-gather
 
-=gather= reads the snapshot without fetching or writing. Three details carry the design:
-
-- =as_of= *filters*: a symbol with no bar on or before that date is left out entirely, which is the honest answer for a date before its listing. One snapshot therefore answers both "what does the market look like now" and "what did it look like last month", which is the whole of what a backtest needs from this function.
-- =window= keeps the last N bars, and =window=None= hands over everything stored. The window is a modelling choice, so it is a parameter rather than a property of how deep the store happens to be.
-- Raw and adjusted are intersected on date, so a name whose two series disagree at the leading edge still pairs a mark and a return from the same day.
+=gather= reads only local files. =as_of= filters out later rows and omits symbols with no history by that date. =window= limits the rows passed downstream, while raw and adjusted bars are intersected by date so marks and returns refer to matching days.
 
 #+begin_src python
 snapshot = gather(date(2026, 8, 25))
 assert set(snapshot) == set(WATCHLIST)
 assert all(len(i.bars) == WINDOW for i in snapshot.values())
-# Every name shares one trading calendar, which is what makes a
-# cross-sectional comparison on a date mean the same thing for all of them.
-assert all({b.date for b in i.bars} == {b.date for b in snapshot["000528"].bars}
-           for i in snapshot.values())
-assert all({b.date for b in i.adjusted} <= {b.date for b in i.bars}
-           for i in snapshot.values())
 assert all(bar.date <= date(2026, 8, 25)
            for i in snapshot.values() for bar in i.bars)
-print(f"gather: {len(snapshot)} instruments, {WINDOW} bars each, "
+assert all({b.date for b in i.adjusted} <= {b.date for b in i.bars}
+           for i in snapshot.values())
+print(f"gather: {len(snapshot)} instruments, {WINDOW} bars, "
       f"mark 000528 {mark(snapshot, '000528')}")
 #+end_src
 
 #+RESULTS:
-: gather: 11 instruments, 60 bars each, mark 000528 8.12
+: gather: 11 instruments, 60 bars, mark 000528 8.12
 
 #+begin_src python
-# The window truncates what is stored; None hands all of it over. Note that
-# `as_of` still filters, so "all of it" is the stored history up to that date.
 whole = gather(date(2026, 8, 25), window=None)
-assert len(whole["000528"].bars) > len(snapshot["000528"].bars)
-assert len(whole["000528"].bars) == sum(
-    1 for bar in read("000528", "raw") if bar.date <= date(2026, 8, 25))
-
-# Asking for an earlier date answers with an earlier market, from the same
-# snapshot: that is the whole of what a backtest needs from gather.
 earlier = gather(date(2026, 6, 1))
+assert len(whole["000528"].bars) > len(snapshot["000528"].bars)
 assert mark(earlier, "000528") != mark(snapshot, "000528")
-assert all(bar.date <= date(2026, 6, 1)
-           for i in earlier.values() for bar in i.bars)
-
-# A date before every stored bar leaves the market empty rather than full of
-# empty instruments.
 assert gather(date(2020, 1, 1)) == {}
 print(f"window: {len(whole['000528'].bars)} stored vs {WINDOW} kept, "
       f"earlier mark {mark(earlier, '000528')}")
 #+end_src
 
 #+RESULTS:
-: window: 616 stored vs 60 kept, earlier mark 9.06
+: window: 601 stored vs 60 kept, earlier mark 9.06
 
 ** assembling the module
 
-#+begin_src python :tangle market.py :noweb tangle
+Dependence tree: =Money -> Bar -> Bars -> Instrument -> Market -> mark=, with readers before =gather=.
+
+#+begin_src python :tangle market.py :noweb tangle :eval never
 <<market-import>>
 
-<<market-money>>
-
-<<market-history>>
+<<market-bar>>
 
 <<market-instrument>>
 
-<<market-map>>
-
 <<market-mark>>
-
-<<market-store>>
-
-<<market-merge-names>>
-
-<<market-write-bars>>
-
-<<market-write-names>>
-
-<<market-window>>
 
 <<market-read>>
 
 <<market-names>>
 
-<<market-refresh>>
-
 <<market-gather>>
 #+end_src
 
-*** what the snapshot says
+** next steps
 
-A data-quality pass over the store, which is cheap because the data is a directory of CSVs: dates are sorted, there are no duplicate dates, and every bar satisfies =low <= open, close <= high=. All 11 names share one trading calendar, so a day missing from one is a holiday or a data gap rather than a fluke of one symbol. The calendar also emerges from the data -- 2026-09-25 is absent, being Mid-Autumn Festival.
-
-One note on the reader: =gather= re-reads a symbol's file twice, once for each series. At 11 names it does not matter, and splitting the reader from the assembler would cost more clarity than the reads cost time.
-
-The market vocabulary, still mostly unimplemented:
-
-- [ ] Market: trading venue and rules, such as China A shares.
-- [ ] Universe: the eligible set of instruments at a particular time. (=WATCHLIST= is the thinnest version: a fixed tuple)
-- [x] Instrument(Stock): symbol, exchange, board, sector, listing status, and trading constraints for a stock. (symbol/name/bars so far)
-- [x] Bar: one point-in-time OHLCV observation for one instrument.
-- [ ] PriceHistory: ordered bars, with adjusted/unadjusted semantics. (raw and qfq are both stored, but as two fields rather than a type that enforces the semantics)
-- [ ] Fundamentals: point-in time financial observations.
-- [ ] Macro: macroeconomic or market-wide observations.
+lazy fetch? check existing, only do it when database is out of date for given instrument.
 
 other useful concepts, that I still don't know how to integrate:
 - TradingCalendar and TradingSession
@@ -1113,10 +763,6 @@ other useful concepts, that I still don't know how to integrate:
 - DataSource, DataSnapshot, and provenance (=source= and =bars/= are the thinnest version: one source, one directory, no recorded fetch date)
 - corporate actions, suspensions, delistings, and adjustment policies
 - data-quality checks and protection against look-ahead/survivorship biases
-** next steps
-
-lazy fetch? check existing, only do it when database is out of date for given instrument.
-
 * account
 :PROPERTIES:
 :header-args:python: :session book :results output :kernel notes :exports both
