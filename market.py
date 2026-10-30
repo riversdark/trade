@@ -42,10 +42,6 @@ class Instrument:
 
 type Market = dict[str, Instrument]     # symbol -> instrument
 
-def mark(market: Market, symbol: str) -> Money:
-    """The latest raw close, which is the one price a session works from."""
-    return market[symbol].bars[-1].close
-
 def read(symbol: str, series: str) -> Bars:
     """Read one stored series for one symbol, oldest first."""
     with open(STORE / series / f"{symbol}.csv", newline="") as handle:
@@ -62,6 +58,10 @@ def load_names() -> dict[str, str]:
     with open(STORE / "names.csv", newline="") as handle:
         return {row["symbol"]: row["name"] for row in csv.DictReader(handle)}
 
+def mark(market: Market, symbol: str) -> Money:
+    """The latest raw close, which is the one price a session works from."""
+    return market[symbol].bars[-1].close
+
 WINDOW = 60
 
 def gather(as_of: date | None = None,
@@ -72,8 +72,6 @@ def gather(as_of: date | None = None,
     for symbol in WATCHLIST:
         bars = tuple(bar for bar in read(symbol, "raw")
                      if as_of is None or bar.date <= as_of)
-        if not bars:
-            continue
         days = {bar.date for bar in bars}
         adjusted = tuple(bar for bar in read(symbol, "qfq")
                          if bar.date in days)

@@ -5,9 +5,6 @@ from enum import Enum
 
 from market import Money, Quantity
 
-
-
-
 @dataclass(frozen=True)
 class Lot:
     """One purchase: shares acquired at a price on a date."""
@@ -15,7 +12,6 @@ class Lot:
     purchase_date: date
     quantity: Quantity
     price: Money
-
 
 @dataclass(frozen=True)
 class Position:
@@ -47,10 +43,9 @@ class Position:
         return self.value - self.cost * self.quantity
 
     def available(self, as_of: date) -> Quantity:
-        """Shares sellable under T+1: whose lot predates ``as_of``."""
+        """Shares sellable under T+1: whose lot predates `as_of`."""
         return sum(lot.quantity for lot in self.lots
                    if lot.purchase_date < as_of)
-
 
 @dataclass(frozen=True)
 class Account:
@@ -92,7 +87,6 @@ class CashFlow:
     date: date
     amount: Money
 
-
 class Side(Enum):
     """Which way an order or fill moves a position."""
 
@@ -103,7 +97,6 @@ class Side(Enum):
     def sign(self) -> int:
         """The direction as a number: buys add shares, sells remove them."""
         return 1 if self is Side.BUY else -1
-
 
 @dataclass(frozen=True)
 class Fill:
@@ -119,7 +112,6 @@ class Fill:
 type Entry = CashFlow | Fill
 type Ledger = tuple[Entry, ...]     # ordered oldest first
 
-
 LEDGER: Ledger = (
     CashFlow(date(2026, 8, 20), 50000.0),
 )
@@ -132,7 +124,6 @@ def cash_delta(entry: Entry) -> Money:
             return amount
         case Fill(side=side, quantity=quantity, price=price):
             return side.sign * -quantity * price
-
 
 def sell_lots(lots: tuple[Lot, ...], quantity: Quantity, as_of: date) -> tuple[Lot, ...]:
     """Consume available lots in FIFO order, oldest first."""
@@ -148,7 +139,6 @@ def sell_lots(lots: tuple[Lot, ...], quantity: Quantity, as_of: date) -> tuple[L
         raise ValueError(f"not enough shares available to sell: {remaining}")
     return tuple(result)
 
-
 def lot_book(fills: tuple[Fill, ...]) -> dict[str, tuple[Lot, ...]]:
     """Fold fills into open lots per symbol: buys open, sells consume FIFO."""
     book: dict[str, list[Lot]] = {}
@@ -162,11 +152,10 @@ def lot_book(fills: tuple[Fill, ...]) -> dict[str, tuple[Lot, ...]]:
             )
     return {symbol: tuple(lots) for symbol, lots in book.items() if lots}
 
-
 def replay(ledger: Ledger, as_of: date, *,
            names: dict[str, str],
            prices: dict[str, Money]) -> Account:
-    """Fold the ledger into the account state at ``as_of``."""
+    """Fold the ledger into the account state at `as_of`."""
     entries = [entry for entry in ledger if entry.date <= as_of]
     cash = sum(cash_delta(entry) for entry in entries)
     lots = lot_book(tuple(entry for entry in entries if isinstance(entry, Fill)))

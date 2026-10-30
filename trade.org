@@ -215,7 +215,7 @@ It returns the account it reasoned about as well as the orders, so a caller can 
 =metrics= *is* inside it, because the risk picture is part of what a session decides on, not just decoration for the human.
 * watches
 :PROPERTIES:
-:header-args:python: :session market :results output :kernel notes :exports both
+:header-args:python: :session watches :results output :kernel notes :exports both
 :END:
 
 there are thousands of stocks in the market, we must determine which should come under consideration.
@@ -245,7 +245,7 @@ print(f"watchlist: {len(WATCHLIST)} symbols:\n {WATCHLIST}")
 <<watches-list>>
 #+end_src
 
-* source (9)
+* source (7)
 :PROPERTIES:
 :header-args:python: :session source :results output :kernel notes :exports both
 :END:
@@ -537,7 +537,7 @@ python source.py refresh 000528 600519   # refresh just these
 - These examples call the live endpoints when evaluated, so they need network access and the returned rows change over time.
 - =source= owns the snapshot path and CSV format; =market= owns the =Bar= and =Instrument= types built from it.
 - The endpoint-to-snapshot path is one writer per dataset: =get= supplies text, and the writer parses and stores it.
-* market
+* market (6)
 :PROPERTIES:
 :header-args:python: :session market :results output :kernel notes :exports both
 :END:
@@ -688,8 +688,6 @@ def gather(as_of: date | None = None,
     for symbol in WATCHLIST:
         bars = tuple(bar for bar in read(symbol, "raw")
                      if as_of is None or bar.date <= as_of)
-        if not bars:
-            continue
         days = {bar.date for bar in bars}
         adjusted = tuple(bar for bar in read(symbol, "qfq")
                          if bar.date in days)
@@ -720,12 +718,16 @@ print(f"gather: {len(snapshot)} instruments, {WINDOW} bars, "
 #+RESULTS:
 : gather: 11 instruments, 60 bars, mark 000528 8.12
 
+If WINDOW not specified we'll gather all historical data.
+
 #+begin_src python
 whole = gather(date(2026, 8, 25), window=None)
 earlier = gather(date(2026, 6, 1))
+
 assert len(whole["000528"].bars) > len(snapshot["000528"].bars)
 assert mark(earlier, "000528") != mark(snapshot, "000528")
 assert gather(date(2020, 1, 1)) == {}
+
 print(f"window: {len(whole['000528'].bars)} stored vs {WINDOW} kept, "
       f"earlier mark {mark(earlier, '000528')}")
 #+end_src
@@ -735,7 +737,7 @@ print(f"window: {len(whole['000528'].bars)} stored vs {WINDOW} kept, "
 
 ** assembling the module
 
-Dependence tree: =Money -> Bar -> Bars -> Instrument -> Market -> mark=, with readers before =gather=.
+Bar -> Bars -> Instrument -> Market -> read -> gather/mark.
 
 #+begin_src python :tangle market.py :noweb tangle :eval never
 <<market-import>>
@@ -744,11 +746,11 @@ Dependence tree: =Money -> Bar -> Bars -> Instrument -> Market -> mark=, with re
 
 <<market-instrument>>
 
-<<market-mark>>
-
 <<market-read>>
 
 <<market-names>>
+
+<<market-mark>>
 
 <<market-gather>>
 #+end_src
@@ -765,7 +767,7 @@ other useful concepts, that I still don't know how to integrate:
 - data-quality checks and protection against look-ahead/survivorship biases
 * account
 :PROPERTIES:
-:header-args:python: :session book :results output :kernel notes :exports both
+:header-args:python: :session account :results output :kernel notes :exports both
 :END:
 
 replay ledger to get as_of account, current prices read from =gather= results.
@@ -780,7 +782,7 @@ The account opens with one 50K cash flow and no positions. There is deliberately
 
 A position is a *bag of lots* rather than a quantity and an average price. That one choice is what makes FIFO cost basis and per-lot T+1 availability fall out of the data instead of being tracked alongside it.
 
-#+name: book-import
+#+name: account-import
 #+begin_src python :results none
 import math
 from dataclasses import dataclass
@@ -815,7 +817,7 @@ If the ledger ever reconciles against a broker statement to the fen, that is the
 
 *** the lot
 
-#+name: book-lot
+#+name: account-lot
 #+begin_src python
 @dataclass(frozen=True)
 class Lot:
@@ -826,7 +828,7 @@ class Lot:
     price: Money
 #+end_src
 
-#+RESULTS: book-lot
+#+RESULTS: account-lot
 
 The purchase date is per lot rather than per position, which is what makes T+1 exact: a position accumulated across two days is only partly sellable on the second.
 
@@ -842,7 +844,7 @@ print(f"lot: {lot.quantity} @ {lot.price} on {lot.purchase_date}")
 
 *** the position
 
-#+name: book-position
+#+name: account-position
 #+begin_src python
 @dataclass(frozen=True)
 class Position:
@@ -874,12 +876,12 @@ class Position:
         return self.value - self.cost * self.quantity
 
     def available(self, as_of: date) -> Quantity:
-        """Shares sellable under T+1: whose lot predates ``as_of``."""
+        """Shares sellable under T+1: whose lot predates `as_of`."""
         return sum(lot.quantity for lot in self.lots
                    if lot.purchase_date < as_of)
 #+end_src
 
-#+RESULTS: book-position
+#+RESULTS: account-position
 
 =price= is the mark the position was valued at, supplied by the caller because the book does not know about markets. Storing it rather than looking it up makes =value= a total property, so one position cannot be priced two different ways inside one session.
 
@@ -905,7 +907,7 @@ print(f"position: {position.quantity} sh, value {position.value:.2f}, "
 
 *** the account
 
-#+name: book-account
+#+name: account-account
 #+begin_src python
 @dataclass(frozen=True)
 class Account:
@@ -940,7 +942,7 @@ class Account:
         return self.position(symbol).value / self.equity if self.equity else 0.0
 #+end_src
 
-#+RESULTS: book-account
+#+RESULTS: account-account
 
 =Account= is state only. Every risk limit lives in =decide.Rules=, so this type cannot quietly carry a policy into a function that has no business seeing one.
 
@@ -997,11 +999,11 @@ print(f"account: cash {account.cash:.2f}, value {account.value:.2f}, "
 CashFlow + (Side -> Fill) -> Entry -> Ledger.
 Two entry types, a union, and one fold.
 
-The ledge is stored as a flow of historical cash and Fill operations, and every snapshot is derived from it.
+The ledger is stored as a flow of historical cash and Fill operations, and every snapshot is derived from it.
 
 *** cash flows
 
-#+name: book-cash-flow
+#+name: account-cash-flow
 #+begin_src python
 @dataclass(frozen=True)
 class CashFlow:
@@ -1011,7 +1013,7 @@ class CashFlow:
     amount: Money
 #+end_src
 
-#+RESULTS: book-cash-flow
+#+RESULTS: account-cash-flow
 
 A deposit and a withdrawal are the same event with opposite signs, so one entry type covers both -- and, later, dividends and fees. They need not share a date: the example below deposits and withdraws a day apart, and nothing in the type cares.
 
@@ -1031,7 +1033,7 @@ print(f"cash flow: {withdrawal.amount:.2f} on {withdrawal.date}")
 
 *** which way a fill moves
 
-#+name: book-side
+#+name: account-side
 #+begin_src python
 class Side(Enum):
     """Which way an order or fill moves a position."""
@@ -1045,7 +1047,7 @@ class Side(Enum):
         return 1 if self is Side.BUY else -1
 #+end_src
 
-#+RESULTS: book-side
+#+RESULTS: account-side
 
 =Side= belongs here rather than beside =Lot=, because nothing about a lot needs a direction: a lot is always something you bought. A =Fill= is the first type that needs to know which way it went, so =Side= sits directly above it in the dependence tree.
 
@@ -1063,7 +1065,7 @@ print(f"side: {Side.BUY.value} {Side.BUY.sign}, "
 
 *** fill
 
-#+name: book-fill
+#+name: account-fill
 #+begin_src python
 @dataclass(frozen=True)
 class Fill:
@@ -1080,7 +1082,7 @@ type Entry = CashFlow | Fill
 type Ledger = tuple[Entry, ...]     # ordered oldest first
 #+end_src
 
-#+RESULTS: book-fill
+#+RESULTS: account-fill
 
 A fill carries the *executed* price, so it also records the slippage against the order's reference price (=fill.price - order.price=). A partial fill is just a fill: the ledger records what happened, not what was asked for.
 
@@ -1116,14 +1118,14 @@ I'm using this account for paper trading, the ledge will grow as more operations
 
 Trading records grow by appending here -- a fill is what actually happened, so the next session replays this tuple and cannot drift from reality.
 
-#+name: book-ledger
+#+name: account-ledger
 #+begin_src python
 LEDGER: Ledger = (
     CashFlow(date(2026, 8, 20), 50000.0),
 )
 #+end_src
 
-#+RESULTS: book-ledger
+#+RESULTS: account-ledger
 
 There is no reconstructed broker snapshot in this tuple, which is informative rather than a gap: every position the system ever reports is one this ledger built from a fill it recorded. The cost of that honesty is that the account starts flat, so the first session has nothing to sell.
 
@@ -1166,7 +1168,7 @@ Entries dated after =as_of= are ignored, so one ledger answers for any moment --
 
 *** the signed cash effect
 
-#+name: book-cash-delta
+#+name: account-cash-delta
 #+begin_src python
 def cash_delta(entry: Entry) -> Money:
     """The signed cash effect of one entry, independent of the lot book."""
@@ -1177,7 +1179,7 @@ def cash_delta(entry: Entry) -> Money:
             return side.sign * -quantity * price
 #+end_src
 
-#+RESULTS: book-cash-delta
+#+RESULTS: account-cash-delta
 
 Cash never needs to know which lot a sale consumed, so this is the sum of the flows rather than a side effect of matching. The =match= makes that literal: the two cases are exhaustive over =Entry=, so there is no branch for "some other kind of entry".
 
@@ -1195,7 +1197,7 @@ print("cash delta: +50000.00 deposit, -10000.00 buy, +4800.00 sell")
 
 : TODO inspect return type: why converted to tuple when we need list in lot_book
 
-#+name: book-sell-lots
+#+name: account-sell-lots
 #+begin_src python
 def sell_lots(lots: tuple[Lot, ...], quantity: Quantity, as_of: date) -> tuple[Lot, ...]:
     """Consume available lots in FIFO order, oldest first."""
@@ -1212,7 +1214,7 @@ def sell_lots(lots: tuple[Lot, ...], quantity: Quantity, as_of: date) -> tuple[L
     return tuple(result)
 #+end_src
 
-#+RESULTS: book-sell-lots
+#+RESULTS: account-sell-lots
 
 A lot bought on =as_of= is not yet available under T+1, so it is skipped. If the older lots cannot cover the sale, the ledger is wrong and we say so loudly rather than inventing shares.
 
@@ -1251,7 +1253,7 @@ print(f"sell lots: 250 of [200, 300, 100] leaves {[lot.quantity for lot in more_
 
 *** folding fills into a lot book
 
-#+name: book-lot-book
+#+name: account-lot-book
 #+begin_src python
 def lot_book(fills: tuple[Fill, ...]) -> dict[str, tuple[Lot, ...]]:
     """Fold fills into open lots per symbol: buys open, sells consume FIFO."""
@@ -1266,6 +1268,8 @@ def lot_book(fills: tuple[Fill, ...]) -> dict[str, tuple[Lot, ...]]:
             )
     return {symbol: tuple(lots) for symbol, lots in book.items() if lots}
 #+end_src
+
+#+RESULTS: account-lot-book
 
 lot_book processes each fill in order and maintains a per-symbol “open lot” book:
 
@@ -1299,12 +1303,12 @@ print(f"lot book: {sorted(book)}, 000528 {[l.quantity for l in book['000528']]}"
 
 Cash is one running balance: the sum of the =CashFlow= entries and the fills.
 
-#+name: book-replay
+#+name: account-replay
 #+begin_src python
 def replay(ledger: Ledger, as_of: date, *,
            names: dict[str, str],
            prices: dict[str, Money]) -> Account:
-    """Fold the ledger into the account state at ``as_of``."""
+    """Fold the ledger into the account state at `as_of`."""
     entries = [entry for entry in ledger if entry.date <= as_of]
     cash = sum(cash_delta(entry) for entry in entries)
     lots = lot_book(tuple(entry for entry in entries if isinstance(entry, Fill)))
@@ -1315,7 +1319,7 @@ def replay(ledger: Ledger, as_of: date, *,
     return Account(cash, positions)
 #+end_src
 
-#+RESULTS: book-replay
+#+RESULTS: account-replay
 
 Two things about the shape are deliberate. The prices and names are keyword-only, so a caller cannot swap them by position. And the filter is =entry.date<=as_of=, not =<=, because an entry dated exactly =as_of= has happened by the end of that day.
 
@@ -1362,55 +1366,44 @@ else:
     assert False, "same-day sale should not be available under T+1"
 
 print(f"replay: cash {account.cash:.2f}, equity {account.equity:.2f}, "
-      f"000528 {account.position('000528').quantity} sh")
+      f"000528 {account.position("000528").quantity} sh")
 #+end_src
 
 #+RESULTS:
 : replay: cash 4800.00, equity 50400.00, 000528 600 sh
 
-** next steps
-
+** assembling the module
 Instead of tangling blocks one by one, all tangle blocks go here, in proper order, as no-web refs.
 
-#+begin_src python :tangle book.py :noweb tangle
-<<book-import>>
+#+begin_src python :tangle account.py :noweb tangle :eval never
+<<account-import>>
+
+<<account-lot>>
+
+<<account-position>>
+
+<<account-account>>
 
 
+<<account-cash-flow>>
+
+<<account-side>>
+
+<<account-fill>>
+
+<<account-ledger>>
 
 
-<<book-lot>>
+<<account-cash-delta>>
 
+<<account-sell-lots>>
 
-<<book-position>>
+<<account-lot-book>>
 
-
-<<book-account>>
-
-
-<<book-cash-flow>>
-
-
-<<book-side>>
-
-
-<<book-fill>>
-
-
-<<book-ledger>>
-
-
-<<book-cash-delta>>
-
-
-<<book-sell-lots>>
-
-
-<<book-lot-book>>
-
-
-<<book-replay>>
+<<account-replay>>
 #+end_src
 
+** next steps
 
 1. DONE: each position is represented by one or more purchase lots, each with a purchase date and price.
 2. DONE: positions are a holding of a given moment, derived from the full ledger of fills and cash flows by =replay=, instead of entered by hand.
