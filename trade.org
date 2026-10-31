@@ -174,7 +174,7 @@ These are to be encoded into the project (gradually).
 - [[https://akshare.akfamily.xyz/data/stock/stock.html][akshare]] installed, but its eastmoney path is blocked here and its Tencent wrapper is a per-year loop; use the Tencent endpoint directly instead.
 - foundamentals, macros, etc
 
-Nothing is imported yet beyond the standard library. Money is a plain =float= (see =book.py= for why that is sufficient at this volume), so the only import so far is =math=, for the =isclose= that ratio checks need.
+Nothing is imported yet beyond the standard library. Money is a plain =float=, so the only import so far is =math=, for the =isclose= that ratio checks need.
 
 * wishful plan
 
@@ -245,7 +245,7 @@ print(f"watchlist: {len(WATCHLIST)} symbols:\n {WATCHLIST}")
 <<watches-list>>
 #+end_src
 
-* source (7)
+* source (3)
 :PROPERTIES:
 :header-args:python: :session source :results output :kernel notes :exports both
 :END:
@@ -537,7 +537,7 @@ python source.py refresh 000528 600519   # refresh just these
 - These examples call the live endpoints when evaluated, so they need network access and the returned rows change over time.
 - =source= owns the snapshot path and CSV format; =market= owns the =Bar= and =Instrument= types built from it.
 - The endpoint-to-snapshot path is one writer per dataset: =get= supplies text, and the writer parses and stores it.
-* market (6)
+* market (2)
 :PROPERTIES:
 :header-args:python: :session market :results output :kernel notes :exports both
 :END:
@@ -765,22 +765,27 @@ other useful concepts, that I still don't know how to integrate:
 - DataSource, DataSnapshot, and provenance (=source= and =bars/= are the thinnest version: one source, one directory, no recorded fetch date)
 - corporate actions, suspensions, delistings, and adjustment policies
 - data-quality checks and protection against look-ahead/survivorship biases
-* account
+* account (3)                                               :fc:
 :PROPERTIES:
 :header-args:python: :session account :results output :kernel notes :exports both
+:FC_CREATED: 2026-10-31T11:26:23Z
+:FC_TYPE:  normal
+:FC_ALGO:  sm2
+:ID:       50d8747b-e30c-4400-ba5a-dafe86cda4d1
+:END:
+:REVIEW_DATA:
+| position | ease | box | interval | due                  |
+|----------+------+-----+----------+----------------------|
+| front    | 2.50 |   0 |     0.00 | 2026-10-31T11:26:23Z |
 :END:
 
-replay ledger to get as_of account, current prices read from =gather= results.
+The booking system consists of three parts: the static account (holding at any specific moment), the dynamic ledger (the total trading history), and how to replay the ledger to get the account.
 
-The booking consists of three parts: the static account (holding at any specific moment), the dynamic ledger (the total trading history), and how to replay the ledger to get the account.
+Nothing is entered by hand or carried forward: =replay(ledger, as_of)= answers "what did the account look like then" from the same tuple at any moment, which is what a backtest needs and what keeps the state from drifting away from what was actually executed.
 
-This is the state half of the vocabulary: what you hold, and the history that produced it. Risk *policy* is deliberately not here -- lot size and the weight caps belong to =Rules= in =decide.py=, because they are choices about how to trade rather than facts about the account.
+We currently only have one ledger, which opens with one 50K cash flow and no positions. Future fills will go into the ledger, then replayed into the account.
 
-An account is stored as its history -- a deposit, then fills -- and every snapshot is *derived* by replaying that history to a date. Nothing is entered by hand or carried forward: =replay(ledger, as_of)= answers "what did the account look like then" from the same tuple at any moment, which is what a backtest needs and what keeps the state from drifting away from what was actually executed.
-
-The account opens with one 50K cash flow and no positions. There is deliberately no reconstructed broker history: the first fill appended is the first thing the account ever did, so every later number traces back to an execution rather than to a transcription.
-
-A position is a *bag of lots* rather than a quantity and an average price. That one choice is what makes FIFO cost basis and per-lot T+1 availability fall out of the data instead of being tracked alongside it.
+One account contains multiple positions, and each position is a *bag of lots* rather than a quantity and an average price.
 
 #+name: account-import
 #+begin_src python :results none
@@ -794,28 +799,11 @@ from market import Money, Quantity
 
 ** the account
 
-(Money + Quantity) -> Lot -> Position -> Account.
-
 An Account is a point-in-time holding: cash, plus the open positions, plus the derived numbers the decision layer reads -- equity, marked value, weights.
 
 A Position records all the trading actions (in Lots) executed up to that moment, plus the reference price it is marked at.
 
 Lot, Position, and Account are all frozen dataclasses. Immutability makes them better suited for functional programming, and makes the replays a safer operation.
-
-*** money and shares
-
-=Money= and =Quantity= are imported from =market=, not redefined here: a price is market data before it is account state, and one money type in the project means =Bar.close= and =Account.cash= are the same =float= with no conversion between them. That is the only dependency edge between the two modules, and it points from =book= into =market=.
-
-Money is a plain =float=. At this volume -- tens of fills, prices with two decimals, capital under 100K -- float is comfortably exact for the arithmetic that matters: quantities are small integers, so =quantity * price= is correctly rounded, and a sum of a few hundred such terms accumulates no visible error.
-
-What is *not* guaranteed is exactness after a division, so the rule for assertions is a split, and it is used consistently below:
-
-- *Exact =* for quantities, cash, and marked value. These are integer sums, so === is meaningful and a mismatch is a real bug.
-- =math.isclose= for anything divided -- cost per share, weights, returns. These are correctly rounded but not exactly representable, so === would be a coin flip dressed as a test. The probability layer will need the same discipline for every ratio it produces.
-
-If the ledger ever reconciles against a broker statement to the fen, that is the moment to revisit this and move to integer cents. Until then, float keeps the source readable.
-
-*** the lot
 
 #+name: account-lot
 #+begin_src python
@@ -841,8 +829,6 @@ print(f"lot: {lot.quantity} @ {lot.price} on {lot.purchase_date}")
 
 #+RESULTS:
 : lot: 200 @ 11.1 on 2026-08-21
-
-*** the position
 
 #+name: account-position
 #+begin_src python
@@ -905,8 +891,6 @@ print(f"position: {position.quantity} sh, value {position.value:.2f}, "
 #+RESULTS:
 : position: 300 sh, value 3600.00, cost 10.30, pnl 510.00
 
-*** the account
-
 #+name: account-account
 #+begin_src python
 @dataclass(frozen=True)
@@ -944,9 +928,7 @@ class Account:
 
 #+RESULTS: account-account
 
-=Account= is state only. Every risk limit lives in =decide.Rules=, so this type cannot quietly carry a policy into a function that has no business seeing one.
-
-There is no duplicate-symbol check, unlike the old =Portfolio=. Positions come from =replay='s dict of symbol to lots, and a dict cannot contain a duplicate key, so such a check would guard a state that cannot occur.
+There is no duplicate-symbol check since Positions come from =replay='s dict of symbol to lots, and a dict cannot contain a duplicate key.
 
 =weight= and =cash_weight= are 0 for an emptied account rather than a division error. Equity *is* cash plus marked value, so zero equity means every weight is zero; dividing anyway would raise where the state itself is perfectly describable.
 
@@ -996,12 +978,8 @@ print(f"account: cash {account.cash:.2f}, value {account.value:.2f}, "
 
 ** the ledger
 
-CashFlow + (Side -> Fill) -> Entry -> Ledger.
-Two entry types, a union, and one fold.
-
 The ledger is stored as a flow of historical cash and Fill operations, and every snapshot is derived from it.
-
-*** cash flows
+=Ledger= is a plain tuple, not a class: order is the only structure it has, and =replay= is the only operation.
 
 #+name: account-cash-flow
 #+begin_src python
@@ -1030,8 +1008,6 @@ print(f"cash flow: {withdrawal.amount:.2f} on {withdrawal.date}")
 #+RESULTS:
 : cash flow: +50000.00 on 2026-08-20
 : cash flow: -50000.00 on 2026-08-21
-
-*** which way a fill moves
 
 #+name: account-side
 #+begin_src python
@@ -1063,8 +1039,6 @@ print(f"side: {Side.BUY.value} {Side.BUY.sign}, "
 #+RESULTS:
 : side: buy 1, sell -1
 
-*** fill
-
 #+name: account-fill
 #+begin_src python
 @dataclass(frozen=True)
@@ -1085,10 +1059,6 @@ type Ledger = tuple[Entry, ...]     # ordered oldest first
 #+RESULTS: account-fill
 
 A fill carries the *executed* price, so it also records the slippage against the order's reference price (=fill.price - order.price=). A partial fill is just a fill: the ledger records what happened, not what was asked for.
-
-=Order= deliberately does not live here. An order is an intention, and only its fill moves money, so an order that never fills leaves no trace -- which is exactly how a cancelled or rejected order should behave.
-
-=Ledger= is a plain tuple, not a class: order is the only structure it has, and =replay= is the only operation.
 
 #+begin_src python
 cf = CashFlow(date(2026, 8, 20), 20000.0)
@@ -1111,13 +1081,6 @@ print(f"cash flow: {cf.amount}, \n"
 : fill: sell 400 @ 12.0,
 : ledger of 3 entries
 
-*** the account history
-
-The account's history, oldest first: one opening deposit and no positions.
-I'm using this account for paper trading, the ledge will grow as more operations come in.
-
-Trading records grow by appending here -- a fill is what actually happened, so the next session replays this tuple and cannot drift from reality.
-
 #+name: account-ledger
 #+begin_src python
 LEDGER: Ledger = (
@@ -1127,8 +1090,7 @@ LEDGER: Ledger = (
 
 #+RESULTS: account-ledger
 
-There is no reconstructed broker snapshot in this tuple, which is informative rather than a gap: every position the system ever reports is one this ledger built from a fill it recorded. The cost of that honesty is that the account starts flat, so the first session has nothing to sell.
-
+I'm using this account for paper trading, the ledge will grow as more operations come in.
 This is also the one piece of data, rather than logic, in the module, so it is the one example about dates and growth: the opening tuple holds exactly one entry, a replay before the deposit sees nothing, and a second ledger shows the shape once trading begins. Every example below reuses =entry=, =later=, =names=, and =prices= from here.
 
 #+begin_src python
@@ -1153,20 +1115,14 @@ print(f"ledger: {len(LEDGER)} entry then {len(ledger_grown)}")
 #+RESULTS:
 : ledger: 1 entry then 4
 
-** replay the ledger into account
-
-cash_delta + (sell_lots -> lot_book) -> replay
+** replay ledger into account
 
 Replay is two independent folds, which is the nicest part of the design.
-
-1. =cash_delta(entry)= gives each entry's signed cash effect, and cash is just their sum. A sale's proceeds do not depend on which lot it consumed, so cash never needs to know about matching.
-2. =lot_book(fills)= is the FIFO fold of the fills alone. =sell_lots(lots, quantity, as_of)= consumes the open lots oldest first, skipping any lot not yet available under T+1, and raising if the sale cannot be covered rather than inventing shares. Symbols sold out entirely are dropped, so the book is exactly the set of open positions.
-
-=replay= is deliberately not given the market, only the two lookups it needs. A symbol missing from =names= or =prices= raises =KeyError=, and that is the failure we want: a holding the market does not know about is a bug downstream, not a position worth zero.
+1. =cash_delta(entry)= gives each entry's signed cash effect, and cash is just their sum.
+2. =lot_book(fills)= is the FIFO fold of the fills alone.
+3. =replay= is deliberately not given the market, only the two lookups it needs.
 
 Entries dated after =as_of= are ignored, so one ledger answers for any moment -- that is the backtest door.
-
-*** the signed cash effect
 
 #+name: account-cash-delta
 #+begin_src python
@@ -1193,9 +1149,7 @@ print("cash delta: +50000.00 deposit, -10000.00 buy, +4800.00 sell")
 #+RESULTS:
 : cash delta: +50000.00 deposit, -10000.00 buy, +4800.00 sell
 
-*** consuming lots in FIFO order
-
-: TODO inspect return type: why converted to tuple when we need list in lot_book
+: TODO inspect return type: why converted to tuple when we need list in lot_book? there seems to be some unnecessary roundtrip here. Perhaps we need some methods from lists?
 
 #+name: account-sell-lots
 #+begin_src python
@@ -1251,8 +1205,6 @@ print(f"sell lots: 250 of [200, 300, 100] leaves {[lot.quantity for lot in more_
 : sell lots: 250 of [200, 100] leaves [50] @ 8.7
 : sell lots: 250 of [200, 300, 100] leaves [250, 100]
 
-*** folding fills into a lot book
-
 #+name: account-lot-book
 #+begin_src python
 def lot_book(fills: tuple[Fill, ...]) -> dict[str, tuple[Lot, ...]]:
@@ -1272,7 +1224,6 @@ def lot_book(fills: tuple[Fill, ...]) -> dict[str, tuple[Lot, ...]]:
 #+RESULTS: account-lot-book
 
 lot_book processes each fill in order and maintains a per-symbol “open lot” book:
-
 - A *BUY* appends a new open =Lot(date, quantity, price)= for that symbol.
 - A *SELL* does not append a lot. Instead it calls =sell_lots(...)= to consume existing lots FIFO for that symbol, then *replaces* the symbol’s list with the remaining lots.
 - At the end it converts each symbol’s remaining list of lots to a tuple, and removes symbols with no remaining lots.
@@ -1298,8 +1249,6 @@ print(f"lot book: {sorted(book)}, 000528 {[l.quantity for l in book['000528']]}"
 
 #+RESULTS:
 : lot book: ['000528', '600036'], 000528 [600]
-
-*** the replay
 
 Cash is one running balance: the sum of the =CashFlow= entries and the fills.
 
@@ -1373,7 +1322,12 @@ print(f"replay: cash {account.cash:.2f}, equity {account.equity:.2f}, "
 : replay: cash 4800.00, equity 50400.00, 000528 600 sh
 
 ** assembling the module
-Instead of tangling blocks one by one, all tangle blocks go here, in proper order, as no-web refs.
+
+lot -> position -> account; cashflow + fille -> entry -> ledger; then replay ledger into account.
+
+the replay keeps two tracks, a cash change, and a lot book; buying inserts lots, selling consumes lots FIFO.
+
+This module is heavy in data type definitions; most of the processing logic belongs to replay.
 
 #+begin_src python :tangle account.py :noweb tangle :eval never
 <<account-import>>
@@ -1404,6 +1358,11 @@ Instead of tangling blocks one by one, all tangle blocks go here, in proper orde
 #+end_src
 
 ** next steps
+
+This is the state half of the vocabulary: what you hold, and the history that produced it.
+Risk *policy* is deliberately not here -- lot size and the weight caps belong to =Rules= in =decide.py=, because they are choices about how to trade rather than facts about the account.
+
+=Order= deliberately does not live here. An order is an intention, and only its fill moves money, so an order that never fills leaves no trace, which is exactly how a cancelled or rejected order should behave. However orders are an important part of the trading strategy, so it has to be saves/tracked SOMEWHERE. Whether we should extend entry types, or let it live somewhere else, is an issue we should address later.
 
 1. DONE: each position is represented by one or more purchase lots, each with a purchase date and price.
 2. DONE: positions are a holding of a given moment, derived from the full ledger of fills and cash flows by =replay=, instead of entered by hand.
