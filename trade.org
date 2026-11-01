@@ -197,15 +197,15 @@ def trade(as_of):
     account = replay(market, LEDGER, as_of)
 
     #4. establish investment beliefs using stats modeling.
-    beliefs = signal(market)
+    beliefs = infer(market)
 
     #5. determine the orders
-    orders  = decide(account, beliefs, rules, as_of)
+    orders  = rebalance(account, beliefs, rules, as_of)
 
     #6. evaluation
-    evals   = metrics(account, rules)
+    metrics = evaluate(account, rules)
 
-    return account, orders, evals
+    return account, orders, metrics
 #+end_src
 
 =trade= takes an =as_of= argument so we can easily use the same logic in backtesting, and it threads that one date through every step that has a time dimension: =gather= sees no bar after it, =replay= sees no fill after it, and T+1 is computed against it.
@@ -688,6 +688,8 @@ def gather(as_of: date | None = None,
     for symbol in WATCHLIST:
         bars = tuple(bar for bar in read(symbol, "raw")
                      if as_of is None or bar.date <= as_of)
+        if not bars:
+            continue
         days = {bar.date for bar in bars}
         adjusted = tuple(bar for bar in read(symbol, "qfq")
                          if bar.date in days)
@@ -737,7 +739,7 @@ print(f"window: {len(whole['000528'].bars)} stored vs {WINDOW} kept, "
 
 ** assembling the module
 
-Bar -> Bars -> Instrument -> Market -> read -> gather/mark.
+Bars -> Instruments -> Market -> read + names -> gather/mark.
 
 #+begin_src python :tangle market.py :noweb tangle :eval never
 <<market-import>>
@@ -749,6 +751,7 @@ Bar -> Bars -> Instrument -> Market -> read -> gather/mark.
 <<market-read>>
 
 <<market-names>>
+
 
 <<market-mark>>
 
@@ -776,12 +779,12 @@ other useful concepts, that I still don't know how to integrate:
 :REVIEW_DATA:
 | position | ease | box | interval | due                  |
 |----------+------+-----+----------+----------------------|
-| front    | 2.50 |   0 |     0.00 | 2026-10-31T11:26:23Z |
+| front    | 2.50 |   1 |     0.01 | 2026-11-01T11:51:12Z |
 :END:
 
-The booking system consists of three parts: the static account (holding at any specific moment), the dynamic ledger (the total trading history), and how to replay the ledger to get the account.
+The booking system consists of three parts: the static account (holding at any specific moment), the accumulating ledger (the total trading history), and how to replay the ledger to get the account.
 
-Nothing is entered by hand or carried forward: =replay(ledger, as_of)= answers "what did the account look like then" from the same tuple at any moment, which is what a backtest needs and what keeps the state from drifting away from what was actually executed.
+=replay(ledger, as_of)= answers "what did the account look like then" from the same tuple at any moment, which is what a backtest needs and what keeps the state from drifting away from what was actually executed.
 
 We currently only have one ledger, which opens with one 50K cash flow and no positions. Future fills will go into the ledger, then replayed into the account.
 
@@ -1366,138 +1369,49 @@ Risk *policy* is deliberately not here -- lot size and the weight caps belong to
 
 1. DONE: each position is represented by one or more purchase lots, each with a purchase date and price.
 2. DONE: positions are a holding of a given moment, derived from the full ledger of fills and cash flows by =replay=, instead of entered by hand.
-3. DONE: orders are made in =trade.py=, and the portfolio is updated by appending the resulting fills to the ledger.
+3. DONE: the decision step creates orders; after manual execution, resulting fills are appended to the ledger.
 4. for orders there is also the planned order, and the actual one. (is this difference slippage?) still open: a =Fill= does not yet reference the =Order= it came from, so slippage cannot be recovered automatically.
 5. TODO: fees, commissions, and stamp duty, either as a =Fill= field or as a negative =CashFlow=. (These are also extra vocabulary: Transaction, LedgerEntry.)
 6. TODO: realised vs unrealised P&L. =replay= consumes lots, so the realised leg is computable, but it is not booked anywhere yet.
-7. TODO: persist the ledger (CSV, Org table, DuckDB) rather than editing a Python literal in =retrieve.py=.
+7. TODO: persist the ledger (CSV, Org table, DuckDB) rather than editing a Python literal.
 8. TODO: Trade, a logical round trip or lifecycle grouping of orders and fills.
 9. reconsider float vs integer cents when the ledger must reconcile to the fen.
-
 * beliefs
 
-This is the statistical modeling step.
-We have a watch list and we also have the market information for the stocks on the watch list.
-And the next step, we should do some statistical modeling to determine our beliefs on them.
-These beliefs will be used to help us later make the decisions.
+Inference turns the point-in-time market into one belief per watched instrument. Beliefs depend on market data, not on the account; the decision step combines them with holdings and explicit rules.
 
-TODO: rewrite from =infer.py= and =rebalance.py=. Takes =Rules= explicitly; returns signals and orders, never touches the account's policy fields.
+infer: investment beliefs
 
-** evaluate: performance and risk
+The first model is momentum over the observed market window: adjusted close at the end divided by adjusted close at the start, minus one. This treats recent performance as evidence about expected return and avoids dividend-related price drops. It emits one signed return per symbol; it does not model uncertainty or use the current account.
 
-=evaluate.py=. =evaluate(portfolio)= summarises the constraints into a =Metrics=:
+Flow: =Market.adjusted_closes= → window return → =Belief= per symbol.
 
-#+begin_src python
-@dataclass(frozen=True)
-class Metrics:
-    equity: Price
-    cash_weight: Decimal
-    max_weight: Decimal
-    issues: tuple[str, ...]
-#+end_src
-
-It is a static analysis of the current holdings: =Portfolio.equity=, =cash / equity=, the largest =Portfolio.weight(symbol)=, and =Portfolio.issues()= -- the list of warnings ("cash below minimum", "<name>(<symbol>) is overweight").
-
-The =default= argument to =max()= is not defensiveness: an account holding only cash is a real state, and =max()= over an empty sequence would raise on it.
-
-This step is deliberately thin. The portfolio is a snapshot of a trading history, so real performance evaluation needs the current holding, the current price, and the complete buying/selling history -- and the ledger now has that history.
-
-- [ ] risk, exposure, drawdown as first-class numbers
-- [ ] realised vs unrealised P&L, from the FIFO sells =replay= already performs
-- [ ] return attribution per name and per strategy
-- [ ] benchmark comparison, and the equity curve over time
-
-TODO extend to the whole performance eval of all investment to date.
-
-** infer: investment beliefs
-
-=infer.py=. =infer(market)= turns a =Market= into =Beliefs=, a =dict[str, Belief]= keyed by symbol.
-
-#+begin_src python
-@dataclass(frozen=True)
-class Belief:
-    symbol: str
-    expected_return: Price       # over the window in `closes`
-#+end_src
-
-Two fields is the whole discipline of this layer: =rebalance= can only see the =Belief=, never the raw prices. The current model is naive momentum -- the return over the observed window -- i.e. "the recent past repeats". It is deliberately dumb, but it is structurally real: one number per name, computed from the market and nothing else. Swap the body, keep the signature.
-
-Two things about this model changed when =gather= became real, and neither was a code change:
-
-- The window is now =gather='s =WINDOW= (60 trading days, about a quarter) rather than "however many closes the fixture happened to have". =closes[0] / closes[-1]= always meant "the return over the window"; it just was not obvious that the window was a *choice* until the window became larger than four.
-- It reads =closes=, i.e. raw unadjusted closes, and ignores both =adjusted_closes= and the rest of the OHLCV bars. That is now a modelling decision with a cost: raw closes carry ex-dividend jumps, and 高=low=, =open=, and =volume= are all unread. The data is in =Instrument=; the signals are not yet.
-
-The inference vocabulary:
-
-- [ ] Signal: evidence, or a transformed feature
-- [x] Belief: current probabilistic state, after combining evidence and prior info (one =expected_return= so far)
-- [ ] Prediction: a forecast, tied to an instrument, horizon, target, and probability distribution, and possibly calibration information.
-- [ ] Scenario: a coherent possible future path or portfolio outcome.
-
-A managerie of strategies can be freely selected and combined later, as long as they all reduce to a =Belief=. The obvious first portfolio of them: a window chosen per horizon rather than fixed, returns from =adjusted_closes= instead of =closes=, and a volatility estimate from =high= and =low= -- which is what the OHLCV bars were fetched for.
-
-** rebalance: beliefs into orders
-
-=rebalance.py=. =rebalance(portfolio, beliefs, market, as_of)= turns beliefs and constraints into a batch of =Order=.
-
-#+begin_src python
-@dataclass(frozen=True)
-class Order:
-    symbol: str
-    name: str
-    side: Side
-    quantity: int                # whole lots, or a full odd-lot exit
-    price: Price                 # reference mark, for the ticket only
-    reason: str                  # human-readable "why", shown on the ticket
-#+end_src
-
-An order is an intention, not an execution. =Order.value= is =quantity * price=, and slippage will be exactly =fill.price - order.price=, which is why an order carries a reference price and nothing else about the future.
-
-- =sell_order(portfolio, position, beliefs, as_of)= exits a name whose =expected_return= has turned non-positive (using =Position.available=, since T+1 applies on the way out too), or trims it back to the cap with =Portfolio.shares_to_sell_to_cap=. =legal_sell= then makes the size legal: whole lots, except that an odd-lot holding may be sold in full when the order closes it (the A-share 零股 rule). Without it a partial sell could emit 650 of 750 shares, which no broker accepts.
-- =buy_orders(portfolio, beliefs, market, sells)= spends the cash the sells free, one equal slot per new name, ranked by =expected_return=. Three details worth keeping: a name whose smallest legal lot already breaks the cap is dropped *before* the budget is split (otherwise it silently eats cash it can never spend); the budget is clamped to one cap per new name, because trading at the mark leaves equity unchanged and an unclamped slot put 90% of a cash-rich account into a single name; and lot counts use =to_integral_value(ROUND_FLOOR)= because =int(x / y)= truncates toward zero and =round()= is banker's rounding.
-- Sells come first: in the A-share market the proceeds are immediately reusable for buying, they just cannot be withdrawn until T+1.
-- =rebalance= drops zero-quantity sell orders, so a "do nothing" name leaves no line on the ticket.
-- =check_batch(portfolio, orders, market, as_of)= asserts what the batch itself promises -- legal lot sizes, sells before buys, no buy above the cap, no negative post-trade quantity -- and *returns* whatever T+1 makes unfixable rather than asserting it away. A same-day 30% position cannot be trimmed today; that is risk to report, not a crash.
-
-Still open in the decision layer:
-
-- [ ] Policy, Strategy, Allocator as separate, selectable objects
-- [ ] position sizing beyond "one equal slot per new name"
-- [ ] risk as a first-class constraint, not a warning string
-- [ ] OrderStatus, OrderType, cancellation, amendment, and rejection
-- [ ] speculative/limit orders: current price is 5, sell/buy if it drops to 4.8
-
-Question: should we allow speculative orders at all, given that =rebalance= currently prices everything at one mark?
+The window comes from =gather=. Changing the horizon, combining other signals, or estimating uncertainty are later model choices.
 
 * orders
-This is the decision-making step, under uncertainty and constraints.
-Here in this step, we make the actual investment decisions.
+
+rebalance: beliefs into orders
+
+The decision step combines the account, beliefs, market marks, trading date, and explicit =Rules= to produce manual order intentions. It does not store policy on the account or execute orders.
+
+Flow: sell positions that no longer meet the belief or exceed their cap, subject to T+1 → rank eligible new buys by belief → allocate available cash while preserving the cash floor, position cap, and legal lot sizes → return sells before buys.
+
+Orders use the latest raw close as their reference price and carry a short reason. A full position exit may use an odd lot; partial trades use whole lots. A batch check verifies order legality and reports cap breaches that T+1 prevents fixing that day.
+
+This is the decision-making step, where beliefs, current holdings, and explicit risk rules become a batch of orders.
+
+An order records an intended side, quantity, reference price, and reason. A fill is recorded separately after the human places the order; comparing fill and reference prices can later measure slippage.
+
 * evaluations
 
-And all the evaluations of investment decisions should both be here.
-I'm still not sure about the details.
-TODO: rewrite from =evaluate.py= and =render.py=. The human interface: the risk picture, then the ticket.
+Evaluation describes the current account and proposed batch so the human can review risk before acting. Begin with equity, cash weight, largest position weight, and rule violations. Historical performance, drawdown, attribution, and benchmark comparison need an explicit time-series design and remain open decisions.
 
-** render: the ticket
+render: the ticket
 
-The ticket below is the real snapshot's session at 2026-08-25, abbreviated:
-
-#+begin_example
-SELL 000528 柳工        3,000 @ 8.120 =    24,360.00   momentum -9.58%
-SELL 601226 华电科工    1,000 @ 6.500 =     6,500.00   momentum -15.14%
-...
-BUY  000001 平安银行    1,000 @ 11.590 =    11,590.00   momentum +4.60%
-...
-8 orders | sell 43,812.00 | buy 34,442.00 | net 9,370.00
-#+end_example
-
-- =pad(text, width)= left-justifies to a *display* width, counting CJK glyphs as two columns with =unicodedata.east_asian_width=. =f"{text:<8}"= counts code points, so Chinese names come out ragged in every terminal.
-- The last line nets sells against buys, which is the cash the batch frees.
-- =trade.main= prints =Metrics= before the ticket, then calls =check_batch= for the batch's own guarantees and reports any position that T+1 still leaves over the cap.
-- The =reason= column is the deciding rule, not a label: =momentum -9.58%= means the exit came from the signal, while =overweight= would mean it came from the cap. On this session every sale says =momentum=, which is the honest summary of a quarter that was down for most of the book.
+The report presents the risk picture first, then a readable ticket with symbol names, side, quantity, reference price, and reason. It ends with the cash released or used by the batch. Formatting and evaluation stay separate from placing orders.
 * backtesting
 
-The one design decision that makes backtesting possible is already everywhere: functions take =as_of= instead of reading a clock. =replay= filters the ledger at =as_of=, =Position.available= and =Portfolio.shares_to_sell_to_cap= use it for T+1, and =trade(as_of)= threads it through to =gather(as_of)=, so a session cannot see a bar after its own date.
+The one design decision that makes backtesting possible is already everywhere: functions take =as_of= instead of reading a clock. =replay= filters the ledger at =as_of=, =Position.available= and the decision layer's cap calculation use it for T+1, and =trade(as_of)= threads it through to =gather(as_of)=, so a session cannot see a bar after its own date.
 
 The dated data source is now real: =gather(as_of)= answers from the stored snapshot, so replaying a past date is a matter of feeding hypothetical fills back into a ledger. The snapshot already holds 640 bars per name, so there is history to backtest over without fetching anything.
 

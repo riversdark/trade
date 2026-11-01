@@ -11,7 +11,7 @@ The whole workflow is one session and each step is one function in one module �
 Run from this folder, using the repo-root venv (`source ../../.venv/bin/activate`, or call `../../.venv/bin/python` directly):
 
 - Tangle after every org edit: `emacs --batch trade.org --eval '(org-babel-tangle)'` (or `C-c C-v t` from the buffer).
-- Check a module: `python <module>.py`. The new modules (`book`, `market`, `watches`) have no `__main__`, so this is an import check and must exit 0; the old modules run their offline self-test under `__main__`.
+- Check a reviewed module: `python <module>.py`. `account`, `market`, and `watches` have no `__main__`, so this is an import check and must exit 0. Import `source` to check it without invoking its CLI; `python source.py` without `refresh` intentionally exits with usage.
 - Name-collision check after adding any named block: `grep -o '^#+name: .*' trade.org | sort | uniq -d` — must print nothing.
 - Refresh and save market data deliberately: `python source.py refresh [symbol ...]`; no symbol means the whole watchlist. Other modules read the local snapshot in `bars/`. The source section may also demonstrate its fetch function against real endpoints, as an explicit interactive example.
 
@@ -19,23 +19,27 @@ Run from this folder, using the repo-root venv (`source ../../.venv/bin/activate
 
 The file is ordered by the dependency tree: background → wishful plan → watches → market → account → beliefs/orders/evaluations → session orchestration/backtesting, then research notes. Each module section ends with one assembly block whose `<<fragment>>` references are that module's table of contents in export order; fragment names follow `<module>-<thing>`.
 
-| module | where it lives in trade.org | state |
-|---|---|---|
-| `watches.py` | `* watches` | done |
-| `source.py` | `* market` → `** source` | done; the only network-facing module, CLI is `refresh` |
-| `market.py` | `* market` → `** gather: market information`; assembly in `** assembling the module` | done — except `<<market-history>>`, which is named and run but not referenced by the assembly block, so `history()` is missing from the module |
-| `book.py` | `* account` → `** the account`, `** the ledger`, `** replay the ledger into account`; assembly in `** next steps` | done; numbers verified against old `ledger` + `portfolio` |
-| `decide.py` | planned: rewrite of `* beliefs` → `** infer` + `** rebalance`. Takes `Rules` explicitly, returns signals and orders, never touches the account's policy fields | not started |
-| `report.py` | planned: rewrite of `* evaluations` (+ `** render: the ticket`) — the risk picture first, then the human-facing ticket | not started |
-| `trade.py` (new) | planned: `* session orchestration`; spec is `<<wish-trade>>` under `* wishful plan`. Threads one `as_of` through every step | not started |
-| backtest driver | `* backtesting`: replay a ledger against historical `gather(as_of)` data | not started |
+### Reviewed modules
 
-The old modules (`gather`, `ledger`, `portfolio`, `retrieve`, `evaluate`, `infer`, `rebalance`, `render`, and the current `trade.py`) are the reference implementation: their numbers are what each rewrite must reproduce. They stay in place until every replacement lands; retirement is one batch, and nothing in the `gather → replay → signal → orders → ticket` path may import them or touch `source.py`. The real account history (`LEDGER`) currently lives in `retrieve.py` until persistence replaces it.
+- `watches.py` — `* watches`; done.
+- `source.py` — `* market` → `** source`; done; the only network-facing module, with an explicit `refresh` CLI.
+- `market.py` — `* market` → `** gather: point-in-time market`; done; `gather()` omits symbols with no bars by `as_of`, and the old `history()` helper was intentionally removed.
+- `account.py` — `* account`; done; its `LEDGER` is the current account history.
+
+### Planned modules
+
+- `inference.py` — infer the `* beliefs` 
+- `decision.py` rebalance the orders; takes `Rules` explicitly, and keeps policy off the account.
+- `report.py` — `* evaluations` → risk picture and human-facing ticket.
+- `trade.py` — `* session orchestration`; the `<<wish-trade>>` block under `* wishful plan` specifies the flow and threads one `as_of` through each step.
+- Backtest driver — `* backtesting`; replay a ledger against historical `gather(as_of)` data.
+
+The old implementation scripts have been removed by project direction; `trade.org` remains the source of truth for the reviewed modules and future work. The old `retrieve.py` ledger was outdated and is retired; use `account.py`'s `LEDGER`. The new `decide.py` and `report.py` are not implemented yet. Nothing in the `gather → replay → signal → orders → ticket` path may call the network or touch `source.py`.
 
 Jump recipes — headings and names are stable, line numbers go stale:
 
 - Which section owns a module? `grep -n ':tangle <file>' trade.org`; the nearest `^* ` heading above is the section.
-- Where is a definition? `rg '^def replay' trade.org`, or search for its fragment name (`<<book-replay>>`).
+- Where is a definition? `rg '^def replay' trade.org`, or search for its fragment name (`<<account-replay>>`).
 - What does it print on real data? The `#+RESULTS:` blocks in the section — examples are never tangled, so those numbers live only in the org file.
 - Current outline: `grep -n '^\(\* \|\*\* \)' trade.org`.
 
@@ -56,7 +60,7 @@ This is a human-in-the-loop project. The agent is a collaborator and learning ai
 
 Examples are written in the same file, alongside the code, so they explain the behavior and can be explored interactively. Keep checks and examples offline by default. When understanding a network-facing function depends on seeing the real endpoint and response shape, show that as a clearly identified, deliberate source-section example; don't make routine module checks or other examples depend on the network.
 
-Every module section follows this shape. It was worked out on `book` and is the contract for the ones after it.
+Every module section follows this shape. It was worked out on `account` and is the contract for the ones after it.
 
 - **Keep the literate explanation easy to follow.** Use headings for meaningful logical boundaries, not every small definition. Place a result type where the reader first needs to understand it, alongside the function that produces or consumes it, so the data shape and its handling are clear in one pass.
 - **Definitions are ordered by the dependence tree**, and each section states that tree at its head — `CashFlow + (Side -> Fill) -> Entry -> Ledger`. A block may use only what is already defined above it, so the exported file imports cleanly and reads bottom-up without forward references.
@@ -74,8 +78,8 @@ Each section ends with one assembly block that lists its definitions as `<<noweb
 
 ```
 # one block per section, at the end, is the only thing that tangles
-#+begin_src python :tangle book.py :noweb tangle
-<<book-import>>
+#+begin_src python :tangle account.py :noweb tangle
+<<account-import>>
 ...
 #+end_src
 
@@ -98,7 +102,7 @@ emacs --batch trade.org --eval '(org-babel-tangle)'   # headless
 Two properties make that safe, and the file-level default is the important one:
 
 - `:header-args:python: :tangle no :mkdirp yes` lives in trade.org's property drawer. `:tangle no` means a snippet tangles **only** when it names a file, so a teaching fragment that happens to be valid Python cannot silently become a module. `:mkdirp yes` creates the directory if a path needs one.
-- `:tangle book.py :noweb tangle` on the assembly block is what actually produces output.
+- `:tangle account.py :noweb tangle` on the assembly block is what actually produces output.
 
 Because noweb resolves **by name**, two blocks sharing a `#+name:` are silently resolved to the first one, and a definition disappears from the module while the tangle still reports success. This bit us once already: an illustration inside a `#+begin_example` block shared the name `book-money` with the real definition, and org happily used the illustration. Example blocks are part of the same namespace, so a fragment meant to be read, not run, must not be named. Two habits keep it honest:
 
@@ -109,4 +113,4 @@ python <module>.py                                  # must import and run
 
 One trap, verified on Emacs 30.2 rather than assumed:
 
-- The subtree form `:tangle book.py :comments no` is **not** what it looks like: org reads everything after the filename as part of the filename and writes a file literally named `book.py :comments no`. Keep the block header to a plain path and put the rest in a property.
+- The subtree form `:tangle account.py :comments no` is **not** what it looks like: org reads everything after the filename as part of the filename and writes a file literally named `account.py :comments no`. Keep the block header to a plain path and put the rest in a property.
