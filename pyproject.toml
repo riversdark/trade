@@ -1,0 +1,10 @@
+[project]
+name = "ctrade"
+version = "0.1.0"
+description = "Research-first, risk-aware trading tools for Chinese A-shares"
+requires-python = ">=3.12"
+dependencies = [
+    "ipython>=9.18.1",
+    "ruff>=0.17.3",
+    "ty>=0.0.95",
+]

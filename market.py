@@ -84,3 +84,44 @@ def gather(as_of: date | None = None,
             adjusted[-window:] if window else adjusted,
         )
     return market
+
+def test() -> None:
+    """Demonstrate snapshot reading and point-in-time market gathering."""
+    bar = Bar(date(2026, 8, 25), 11.5, 11.8, 11.3, 11.6, 12345)
+    assert bar.low <= bar.open <= bar.high
+    assert bar.low <= bar.close <= bar.high
+    print(f"bar: {bar.date} O{bar.open} H{bar.high} L{bar.low} "
+          f"C{bar.close} V{bar.volume}")
+
+    stored = read("000528", "raw")
+    assert len(stored) > 5
+    assert [item.date for item in stored] == sorted(item.date for item in stored)
+    assert all(item.low <= item.close <= item.high for item in stored)
+    names = load_names()
+    assert names["000528"] == "柳工"
+    print(f"read: {len(stored)} bars, {stored[0].date} .. {stored[-1].date}")
+
+    as_of = date(2026, 8, 25)
+    snapshot = gather(as_of)
+    assert all(len(inst.bars) <= WINDOW for inst in snapshot.values())
+    assert all(bar.date <= as_of for inst in snapshot.values()
+               for bar in inst.bars)
+    assert all(tuple(bar.date for bar in inst.bars)
+               == tuple(bar.date for bar in inst.adjusted)
+               for inst in snapshot.values())
+    print(f"gather: {len(snapshot)} instruments, {WINDOW} bar window, "
+          f"mark 000528 {mark(snapshot, '000528')}")
+
+    whole = gather(as_of, window=None)
+    earlier = gather(date(2026, 6, 1))
+    assert len(whole["000528"].bars) >= len(snapshot["000528"].bars)
+    assert mark(earlier, "000528") != mark(snapshot, "000528")
+    assert gather(date(2020, 1, 1)) == {}
+    print(f"history: {len(whole['000528'].bars)} stored vs "
+          f"{len(snapshot['000528'].bars)} kept; "
+          f"earlier mark {mark(earlier, '000528')}")
+    print("Market tests passed.")
+
+
+if __name__ == "__main__":
+    test()

@@ -15,13 +15,14 @@ KLINE = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
 # one request -> many symbols' Chinese names and latest quotes
 QUOTE = "https://qt.gtimg.cn/q="
 
-# Q: what's this for?
+# pretend to be browser traffic
 HEADERS = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) notes-trade/0.1"}
 
 DEPTH = 640     # rows requested while exploring; endpoint cap is 640
 DELAY = 0.35    # Seconds between symbol requests
 BATCH = 50      # symbols per quote request
 RETRIES = 3
+
 
 def market_code(symbol: str) -> str:
     """A-share symbol -> Tencent's market-prefixed code."""
@@ -44,6 +45,7 @@ def get(url: str, *, encoding: str = "utf-8") -> str:
                 raise
             time.sleep(DELAY * 2 ** attempt)
     raise AssertionError("unreachable")
+
 
 STORE = Path.home() / "git" / "notes" / "projects" / "trade" / "bars"
 SERIES = ("raw", "qfq")
@@ -101,11 +103,55 @@ def refresh(symbols: tuple[str, ...] = (),
             time.sleep(DELAY)
     write_names(symbols, STORE / "names.csv")
 
+def test() -> None:
+    """Fetch sample responses and exercise the snapshot writers."""
+    from tempfile import TemporaryDirectory
+    from urllib.parse import urlparse
+
+    parsed = urlparse(KLINE)
+    assert parsed.scheme == "https" and parsed.hostname == "web.ifzq.gtimg.cn"
+    assert RETRIES > 1 and DELAY > 0
+    print(f"politeness: {RETRIES} tries, {DELAY}s pacing, {BATCH} names/request")
+
+    wire = get(f"{KLINE}?param=sz000528,day,1900-01-01,"
+               f"{date.today().isoformat()},{DEPTH},qfq")
+    rows = json.loads(wire)["data"]["sz000528"]["qfqday"]
+    assert rows
+    print(type(wire).__name__)
+    print(rows[0])
+
+    assert market_code("000528") == "sz000528"
+    assert market_code("600519") == "sh600519"
+    assert market_code("830799") == "bj830799"
+    print("codes: 000528 -> sz, 600519 -> sh, 830799 -> bj")
+
+    with TemporaryDirectory() as tmp:
+        path = Path(tmp) / "qfq" / "000528.csv"
+        write_bars("000528", "qfq", path)
+        lines = path.read_text().splitlines()
+        assert lines[0] == "date,open,high,low,close,volume"
+        assert len(lines[1].split(",")) == 6
+        print(lines[:2])
+
+    with TemporaryDirectory() as tmp:
+        path = Path(tmp) / "names.csv"
+        path.write_text("symbol,name\n999999,existing\n")
+        write_names(("000528", "601226"), path)
+        with open(path, newline="") as handle:
+            names = {row["symbol"]: row["name"]
+                     for row in csv.DictReader(handle)}
+        assert names["999999"] == "existing"
+        assert names["000528"] and names["601226"]
+        print(names)
+    print("Source tests passed.")
+
 
 if __name__ == "__main__":
 
     match sys.argv[1:]:
+        case []:
+            test()
         case ["refresh", *symbols]:
             refresh(tuple(symbols))
         case _:
-            raise SystemExit("usage: python source.py refresh [symbol ...]")
+            raise SystemExit("usage: python source.py [refresh [symbol ...]]")

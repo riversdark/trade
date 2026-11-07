@@ -1,116 +1,59 @@
 # Agent instructions for coding tasks
 
-## what this is
+## project
 
-A research-first, risk-aware trading system for Chinese A-shares, built as literate programming in `trade.org`. The org file is the single source of truth; every `.py` module here is tangled output from it. Execution is manual: a session ends with a ticket that a human places by hand.
+A research-first, risk-aware trading system for Chinese A-shares. Python scripts are the source of truth for implementation and runnable examples; `trade.org` holds background, design reasoning, and research. Execution is manual: a session ends with a ticket that a human places by hand.
 
-The whole workflow is one session and each step is one function in one module — the spec is block `<<wish-trade>>` under `* wishful plan`.
+Current status: **Fresh restart.** Treat the scripts listed below as the current implementation baseline. The main workflow and some planned modules still need to be built.
+
+The session flow is specified by the `<<wish-trade>>` block under `* wishful plan` in `trade.org`. It is a design sketch, not executable implementation.
 
 ## commands
 
-Run from this folder, using the repo-root venv (`source ../../.venv/bin/activate`, or call `../../.venv/bin/python` directly):
+Run from this folder with the local virtual environment at `.venv`:
 
-- Tangle after every org edit: `emacs --batch trade.org --eval '(org-babel-tangle)'` (or `C-c C-v t` from the buffer).
-- Check a reviewed module: `python <module>.py`. `account`, `market`, and `watches` have no `__main__`, so this is an import check and must exit 0. Import `source` to check it without invoking its CLI; `python source.py` without `refresh` intentionally exits with usage.
-- Name-collision check after adding any named block: `grep -o '^#+name: .*' trade.org | sort | uniq -d` — must print nothing.
-- Refresh and save market data deliberately: `python source.py refresh [symbol ...]`; no symbol means the whole watchlist. Other modules read the local snapshot in `bars/`. The source section may also demonstrate its fetch function against real endpoints, as an explicit interactive example.
+- Run a module and its examples: `.venv/bin/python <module>.py`. `watches.py` has no `__main__`; check it with `.venv/bin/python -c 'import watches'`.
+- `source.py` runs its live endpoint checks with no arguments. Use `.venv/bin/python source.py refresh [symbol ...]` to deliberately update saved market data; no symbol means the whole watchlist.
+- Modules other than `source.py` read the local snapshot in `bars/`. Do not refresh data unless the user asks.
 
-## finding your way in `trade.org`
+## current modules
 
-The file is ordered by the dependency tree: background → wishful plan → watches → market → account → beliefs/orders/evaluations → session orchestration/backtesting, then research notes. Each module section ends with one assembly block whose `<<fragment>>` references are that module's table of contents in export order; fragment names follow `<module>-<thing>`.
+- `watches.py` — watchlist.
+- `source.py` — the only network-facing module; fetches and writes market snapshots.
+- `market.py` — point-in-time market data; `gather()` omits symbols with no bars by `as_of`.
+- `account.py` — account and ledger; `LEDGER` is the current account history.
+- `inference.py` — beliefs from the market snapshot.
+- `orders.py` — rebalance rules and manual order intentions.
 
-### Reviewed modules
+Planned work:
 
-- `watches.py` — `* watches`; done.
-- `source.py` — `* market` → `** source`; done; the only network-facing module, with an explicit `refresh` CLI.
-- `market.py` — `* market` → `** gather: point-in-time market`; done; `gather()` omits symbols with no bars by `as_of`, and the old `history()` helper was intentionally removed.
-- `account.py` — `* account`; done; its `LEDGER` is the current account history.
+- `trade.py` — currently a placeholder; implement the session flow from `<<wish-trade>>` and thread one `as_of` through each step.
+- `report.py` — not implemented; produce the risk picture and human-facing ticket.
+- Backtest driver — not implemented; replay a ledger against historical `gather(as_of)` data.
 
-### Planned modules
+Nothing in the `gather → replay → signal → orders → ticket` path may call the network or use `source.py`.
 
-- `inference.py` — infer the `* beliefs` 
-- `decision.py` rebalance the orders; takes `Rules` explicitly, and keeps policy off the account.
-- `report.py` — `* evaluations` → risk picture and human-facing ticket.
-- `trade.py` — `* session orchestration`; the `<<wish-trade>>` block under `* wishful plan` specifies the flow and threads one `as_of` through each step.
-- Backtest driver — `* backtesting`; replay a ledger against historical `gather(as_of)` data.
+## source and design notes
 
-The old implementation scripts have been removed by project direction; `trade.org` remains the source of truth for the reviewed modules and future work. The old `retrieve.py` ledger was outdated and is retired; use `account.py`'s `LEDGER`. The new `decide.py` and `report.py` are not implemented yet. Nothing in the `gather → replay → signal → orders → ticket` path may call the network or touch `source.py`.
+Python modules hold the implementation and runnable examples. `trade.org` holds design logic and research, not duplicate implementations or runnable examples. The only source block retained there is the non-executable `wish-trade` flow sketch.
 
-Jump recipes — headings and names are stable, line numbers go stale:
+To locate a definition, search the Python files, for example `rg '^def replay' .`. To find design reasoning, search `trade.org`. The Org headings provide its outline: `grep -n '^\* ' trade.org`.
 
-- Which section owns a module? `grep -n ':tangle <file>' trade.org`; the nearest `^* ` heading above is the section.
-- Where is a definition? `rg '^def replay' trade.org`, or search for its fragment name (`<<account-replay>>`).
-- What does it print on real data? The `#+RESULTS:` blocks in the section — examples are never tangled, so those numbers live only in the org file.
-- Current outline: `grep -n '^\(\* \|\*\* \)' trade.org`.
+Data lives outside the code: `bars/raw/` and `bars/qfq/` hold one CSV per symbol (unadjusted / 前复权), and `bars/names.csv` holds names. Only `source.py` writes them; everything else reads.
 
-Data lives outside the code: `bars/raw/` and `bars/qfq/` hold one CSV per symbol (unadjusted / 前复权), `bars/names.csv` holds names. Only `source.py` writes them; everything else reads.
+## script conventions
 
-## general principles
+- Order definitions by dependency. Keep imports and types before functions that use them, so the script reads top to bottom.
+- Keep explanations close to the code. Use brief comments and one-line docstrings for local intent; put longer design reasoning in `trade.org`.
+- Keep examples small and offline by default. Each module's `test()` should be a runnable demonstration under `if __name__ == "__main__":`. The deliberate exception is `source.py`, whose no-argument checks call live endpoints and write only to temporary test directories.
+- Use exact `==` for quantities, cash, and marked values that are integer sums. Use `math.isclose` for divided values such as cost per share, weights, and returns.
 
-This is a human-in-the-loop project. The agent is a collaborator and learning aid; the human owns the design and development direction.
-- Before each step, check for the human's latest edits and preserve them.
-- Work on one agreed task at a time. Make the smallest coherent change that completes that step, then explain what changed, why, and how it was checked so the human can review it and choose the next direction.
-- Do not silently expand the task into later modules, broad rewrites, or speculative architecture. When a consequential design choice is unclear, explain the tradeoff and discuss it with the human; use judgment for routine implementation details within the agreed direction.
-- Keep the reasoning visible: explain relevant assumptions, patterns, and new functionality in plain language, and point out useful things the human can learn from the change.
-- aim for concise code and clear logic, don't write overly defensive code, let edge cases fail loudly.
-- Build up gradually; don't add complexity before the human has had a chance to understand and steer the work.
-- the first solution will never be the best one, because we make overall plans at the start and work out the details later; that's alright, because refactoring is inherently part of programming
+## working with the human
 
-## the section format
+This is a human-in-the-loop project. The human owns the design and development direction.
 
-Examples are written in the same file, alongside the code, so they explain the behavior and can be explored interactively. Keep checks and examples offline by default. When understanding a network-facing function depends on seeing the real endpoint and response shape, show that as a clearly identified, deliberate source-section example; don't make routine module checks or other examples depend on the network.
-
-Every module section follows this shape. It was worked out on `account` and is the contract for the ones after it.
-
-- **Keep the literate explanation easy to follow.** Use headings for meaningful logical boundaries, not every small definition. Place a result type where the reader first needs to understand it, alongside the function that produces or consumes it, so the data shape and its handling are clear in one pass.
-- **Definitions are ordered by the dependence tree**, and each section states that tree at its head — `CashFlow + (Side -> Fill) -> Entry -> Ledger`. A block may use only what is already defined above it, so the exported file imports cleanly and reads bottom-up without forward references.
-- **Every definition is explored immediately after it appears.** The example is part of the explanation, not a chore deferred to the end, which is exactly why the work happens in an interactive language. It runs in the module's session, so the variables it binds stay live for the examples below. Use a real endpoint example for source fetching where that makes the returned data and its parsing clear; keep other examples offline.
-- **Examples are not tangled.** Only the assembly block at the end of the section carries `:tangle <module>.py`, so examples never reach the module and `python <module>.py` does not run them. The tests are done by hand, in the org file.
-- **Docstrings are one line.** Anything longer is prose, in the section, where it can be read as an argument. A one-line summary survives in the tangled file and in `help()`, which is all a docstring is for.
-- **No machinery.** There is no test framework, no `check_` functions, and no runner. An example is a few lines that assert and print what they saw. Because the session carries state forward, a later example reuses an earlier variable instead of rebuilding a thin fixture of its own.
-- **Float exactness is split deliberately.** Exact `==` for quantities, cash, and marked value, which are integer sums; `math.isclose` for anything divided — cost per share, weights, returns — because those are correctly rounded but not exactly representable.
-
-## the tangle contract
-
-`trade.org` is the source. The `.py` modules are generated from it and are tracked only so they can be read next to the prose; never edit one by hand, because the next tangle overwrites it.
-
-Each section ends with one assembly block that lists its definitions as `<<noweb>>` references, in export order. That is the mechanism that lets literate order differ from export order:
-
-```
-# one block per section, at the end, is the only thing that tangles
-#+begin_src python :tangle account.py :noweb tangle
-<<account-import>>
-...
-#+end_src
-
-# a definition elsewhere in the section, named as <<reference-name>> and not
-# tangled on its own
-#+begin_src python
-...
-#+end_src
-```
-
-```
-:PROPERTIES:
-:header-args:python: :tangle no :mkdirp yes
-:END:
-
-C-c C-v t          # org-babel-tangle, from this buffer
-emacs --batch trade.org --eval '(org-babel-tangle)'   # headless
-```
-
-Two properties make that safe, and the file-level default is the important one:
-
-- `:header-args:python: :tangle no :mkdirp yes` lives in trade.org's property drawer. `:tangle no` means a snippet tangles **only** when it names a file, so a teaching fragment that happens to be valid Python cannot silently become a module. `:mkdirp yes` creates the directory if a path needs one.
-- `:tangle account.py :noweb tangle` on the assembly block is what actually produces output.
-
-Because noweb resolves **by name**, two blocks sharing a `#+name:` are silently resolved to the first one, and a definition disappears from the module while the tangle still reports success. This bit us once already: an illustration inside a `#+begin_example` block shared the name `book-money` with the real definition, and org happily used the illustration. Example blocks are part of the same namespace, so a fragment meant to be read, not run, must not be named. Two habits keep it honest:
-
-```
-grep -o '^#+name: .*' trade.org | sort | uniq -d    # must print nothing
-python <module>.py                                  # must import and run
-```
-
-One trap, verified on Emacs 30.2 rather than assumed:
-
-- The subtree form `:tangle account.py :comments no` is **not** what it looks like: org reads everything after the filename as part of the filename and writes a file literally named `account.py :comments no`. Keep the block header to a plain path and put the rest in a property.
+- Check for the human's latest edits before each step and preserve them.
+- Work on one agreed task at a time. Make the smallest coherent change, then explain what changed, why, and how it was checked.
+- Do not silently expand the task into later modules, broad rewrites, or speculative architecture. Discuss consequential design choices; use judgment for routine implementation details.
+- Keep reasoning visible in plain language. Aim for concise code, clear logic, and edge cases that fail loudly.
+- Build gradually so the human can review and steer the work.
